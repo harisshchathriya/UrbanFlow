@@ -95,7 +95,7 @@ export function MockLogisticsOperatorDashboard() {
   const googleMapsApiKey =
     import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyBthAa_IcLPDqnl8mZtk7XfcQRtFbDXl_E';
   const { isLoaded: isGoogleLoaded } = useJsApiLoader({
-    id: 'urbanflow-google-maps-mock-logistics-operator',
+    id: 'urbanflow-google-maps',
     googleMapsApiKey,
   });
 
