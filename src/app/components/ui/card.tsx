@@ -1,8 +1,6 @@
 import * as React from "react";
 
-import { cn } from "./utils";
-
-function Card({ className, ...props }: React.ComponentProps<"div">) {
+import { cn } from './utils';function Card({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card"

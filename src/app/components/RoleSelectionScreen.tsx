@@ -1,8 +1,4 @@
-import { useNavigate } from 'react-router-dom';
-import { motion } from 'motion/react';
-import { Truck, User, Building2 } from 'lucide-react';
-
-export function RoleSelectionScreen() {
+import { useNavigate } from 'react-router-dom';import { motion } from 'motion/react';import { Truck, User, Building2 } from 'lucide-react';export function RoleSelectionScreen() {
   const navigate = useNavigate();
 
   const roles = [

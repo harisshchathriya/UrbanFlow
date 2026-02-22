@@ -1,8 +1,4 @@
-import { useNavigate } from 'react-router-dom';
-import { motion } from 'motion/react';
-import { Truck } from 'lucide-react';
-
-export function WelcomeScreen() {
+import { useNavigate } from 'react-router-dom';import { motion } from 'motion/react';import { Truck } from 'lucide-react';export function WelcomeScreen() {
   const navigate = useNavigate();
 
   return (

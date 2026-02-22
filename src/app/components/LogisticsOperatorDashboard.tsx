@@ -1,25 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import type { Session } from '@supabase/supabase-js';
-import { GoogleMap, MarkerF, useJsApiLoader } from '@react-google-maps/api';
-import { DashboardHeader } from './DashboardHeader';
-import { GlassCard } from './GlassCard';
-import { KPICard } from './KPICard';
-import { CO2Dashboard } from './CO2Dashboard';
-import { LoadConsolidationDashboard } from './LoadConsolidationDashboard';
-import { hasVerifiedRole } from '../auth/fallbackAuth';
-import { supabase } from '../../services/supabaseClient';
-import {
-  AlertTriangle,
-  ArrowRight,
-  Clock,
-  Package,
-  Route,
-  Truck,
-  Users,
-} from 'lucide-react';
-
-type DriverLive = {
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';import { useNavigate } from 'react-router-dom';import type { Session } from '@supabase/supabase-js';
+import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';import { DashboardHeader } from './DashboardHeader';import { GlassCard } from './GlassCard';import { KPICard } from './KPICard';import { CO2Dashboard } from './CO2Dashboard';import { LoadConsolidationDashboard } from './LoadConsolidationDashboard';import { supabase } from '../../services/supabaseClient';import { hasVerifiedRole } from '../auth/fallbackAuth';import { AdvancedMarker } from './maps/AdvancedMarker';import { GOOGLE_MAP_ID, GOOGLE_MAPS_API_KEY, MAP_LIBRARIES } from './maps/googleMapsConfig';import { AlertTriangle, ArrowRight, Clock, Package, Route, Truck, Users } from 'lucide-react';type DriverLive = {
   id: string;
   name: string;
   status: string;
@@ -28,6 +8,7 @@ type DriverLive = {
   updatedAt: string | null;
   vehicleId: string | null;
   battery: number | null;
+  capacity?: number | null;
 };
 
 type DeliveryLive = {
@@ -38,6 +19,7 @@ type DeliveryLive = {
   driverId: string | null;
   eta: string | null;
   createdAt: string | null;
+  priority?: string | null;
   pickupLat: number | null;
   pickupLng: number | null;
   dropLat: number | null;
@@ -52,6 +34,8 @@ type KPIState = {
   onTimePct: number;
   activeDrivers: number;
   alerts: number;
+  utilizationPct: number;
+  completionRatePct: number;
 };
 
 type AlertItem = {
@@ -66,27 +50,47 @@ type RouteSuggestion = {
   distanceKm: number;
 };
 
+type DriverRow = {
+  id: string;
+  name: string | null;
+  status: string | null;
+  last_lat: number | null;
+  last_lng: number | null;
+};
+
+type VehicleRow = {
+  id: string;
+  driver_name: string | null;
+  capacity: number | null;
+  status: string | null;
+};
+
+type VehicleStatusRow = {
+  vehicle_id: string;
+  latitude: number | null;
+  longitude: number | null;
+  status: string | null;
+  battery_level: number | null;
+};
+
+type DeliveryRow = {
+  id: string;
+  driver_id: string | null;
+  vehicle_id: string | null;
+  status: string | null;
+  priority: string | null;
+  from_lat: number | null;
+  from_lng: number | null;
+  to_lat: number | null;
+  to_lng: number | null;
+  created_at?: string | null;
+};
+
 const toNumber = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() !== '') {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-};
-
-const getFirstNumber = (row: Record<string, unknown>, keys: string[]): number | null => {
-  for (const key of keys) {
-    const parsed = toNumber(row[key]);
-    if (parsed !== null) return parsed;
-  }
-  return null;
-};
-
-const getFirstString = (row: Record<string, unknown>, keys: string[]): string | null => {
-  for (const key of keys) {
-    const value = row[key];
-    if (typeof value === 'string' && value.trim() !== '') return value;
   }
   return null;
 };
@@ -104,14 +108,58 @@ const getDistanceKm = (lat1: number, lng1: number, lat2: number, lng2: number): 
   return r * c;
 };
 
-const realtimeStatuses = new Set(['assigned', 'accepted', 'in_transit', 'moving', 'on_delivery']);
+const realtimeStatuses = new Set(['assigned', 'accepted', 'in_transit']);
+
+const mapDriverLive = (
+  row: DriverRow,
+  vehicleByDriverName: Map<string, VehicleRow>,
+  statusByVehicleId: Map<string, VehicleStatusRow>
+): DriverLive | null => {
+  const lat = toNumber(row.last_lat);
+  const lng = toNumber(row.last_lng);
+  if (lat === null || lng === null) return null;
+  const driverName = row.name || 'Unknown Driver';
+  const vehicle = vehicleByDriverName.get(driverName) || null;
+  const vehicleStatus = vehicle ? statusByVehicleId.get(vehicle.id) || null : null;
+  return {
+    id: row.id,
+    name: driverName,
+    status: (row.status || vehicleStatus?.status || 'unknown').toLowerCase(),
+    lat,
+    lng,
+    updatedAt: null,
+    vehicleId: vehicle?.id || null,
+    battery: vehicleStatus?.battery_level ?? null,
+    capacity: vehicle?.capacity ?? null,
+  };
+};
+
+const mapDeliveryLive = (row: DeliveryRow): DeliveryLive => {
+  const createdAt = row.created_at ?? null;
+  const eta = createdAt ? new Date(new Date(createdAt).getTime() + 30 * 60000).toISOString() : null;
+  return {
+  id: row.id,
+  commodityName: row.priority ? `${row.priority} priority` : 'Delivery',
+  quantity: 1,
+  status: (row.status || 'assigned').toLowerCase(),
+  driverId: row.driver_id,
+  eta,
+  createdAt,
+  priority: row.priority ?? null,
+  pickupLat: toNumber(row.from_lat),
+  pickupLng: toNumber(row.from_lng),
+  dropLat: toNumber(row.to_lat),
+  dropLng: toNumber(row.to_lng),
+  };
+};
 
 export function LogisticsOperatorDashboard() {
-  const googleMapsApiKey =
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyBthAa_IcLPDqnl8mZtk7XfcQRtFbDXl_E';
+  const googleMapsApiKey = GOOGLE_MAPS_API_KEY;
+  const allowGuest = import.meta.env.VITE_ALLOW_GUEST_DASHBOARD === 'true' || import.meta.env.DEV;
   const { isLoaded: isGoogleLoaded } = useJsApiLoader({
     id: 'urbanflow-google-maps',
     googleMapsApiKey,
+    libraries: MAP_LIBRARIES,
   });
 
   const navigate = useNavigate();
@@ -124,127 +172,129 @@ export function LogisticsOperatorDashboard() {
   const [deliveries, setDeliveries] = useState<DeliveryLive[]>([]);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [kpiUpdatedAt, setKpiUpdatedAt] = useState<{ deliveries?: string; drivers?: string; alerts?: string }>({});
+  const [realtimeStatus, setRealtimeStatus] = useState<{ drivers: string; vehicle: string; deliveries: string }>({
+    drivers: 'INIT',
+    vehicle: 'INIT',
+    deliveries: 'INIT',
+  });
+  const [flashDeliveries, setFlashDeliveries] = useState(false);
+  const [flashDrivers, setFlashDrivers] = useState(false);
+  const prevCountsRef = useRef<{ deliveries: number; activeDrivers: number }>({ deliveries: 0, activeDrivers: 0 });
+  const vehicleByDriverNameRef = useRef<Map<string, VehicleRow>>(new Map());
+  const statusByVehicleIdRef = useRef<Map<string, VehicleStatusRow>>(new Map());
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const getSession = async () => {
       const { data, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) {
-        setError(sessionError.message);
-        setCheckingAuth(false);
+        if (isMounted.current) {
+          setError(sessionError.message);
+          setCheckingAuth(false);
+        }
         return;
       }
       if (!data.session) {
         const hasFallbackAccess = hasVerifiedRole('logistics-operator');
-        if (!hasFallbackAccess) {
+        if (!hasFallbackAccess && !allowGuest) {
           navigate('/login/logistics-operator', { replace: true });
           return;
         }
-        setFallbackAuthorized(true);
-        setSession(null);
-        setCheckingAuth(false);
+        if (isMounted.current) {
+          setFallbackAuthorized(true);
+          setCheckingAuth(false);
+        }
         return;
       }
-      setFallbackAuthorized(false);
-      setSession(data.session);
-      setCheckingAuth(false);
+      if (isMounted.current) {
+        setFallbackAuthorized(false);
+        setSession(data.session);
+        setCheckingAuth(false);
+      }
     };
 
     void getSession();
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       if (!newSession) {
-        if (!hasVerifiedRole('logistics-operator')) {
+        if (!hasVerifiedRole('logistics-operator') && !allowGuest) {
           navigate('/login/logistics-operator', { replace: true });
           return;
         }
-        setFallbackAuthorized(true);
-        setSession(null);
+        if (isMounted.current) {
+          setFallbackAuthorized(true);
+        }
         return;
       }
-      setFallbackAuthorized(false);
-      setSession(newSession);
+      if (isMounted.current) {
+        setFallbackAuthorized(false);
+        setSession(newSession);
+      }
     });
 
     return () => {
       authListener?.subscription.unsubscribe();
     };
-  }, [navigate]);
+  }, [navigate, allowGuest, hasVerifiedRole]);
 
   const hydrateDashboard = useCallback(async () => {
     try {
       setError(null);
 
-      const [driverRes, vehicleStatusRes, deliveryRes] = await Promise.all([
+      const [driverRes, vehicleRes, vehicleStatusRes, deliveryRes] = await Promise.all([
         supabase.from('drivers').select('*'),
+        supabase.from('vehicles').select('*'),
         supabase.from('vehicle_status').select('*'),
-        supabase.from('delivery_imports').select('*').order('created_at', { ascending: false }).limit(200),
+        supabase.from('deliveries').select('*').order('created_at', { ascending: false }).limit(200),
       ]);
 
       if (driverRes.error) throw new Error(driverRes.error.message);
+      if (vehicleRes.error) throw new Error(vehicleRes.error.message);
       if (vehicleStatusRes.error) throw new Error(vehicleStatusRes.error.message);
       if (deliveryRes.error) throw new Error(deliveryRes.error.message);
 
-      const vehicleByDriver = new Map<string, Record<string, unknown>>();
-      const vehicleByVehicleId = new Map<string, Record<string, unknown>>();
-      (vehicleStatusRes.data || []).forEach((raw) => {
-        const row = raw as Record<string, unknown>;
-        const driverId = getFirstString(row, ['driver_id']);
-        const vehicleId = getFirstString(row, ['vehicle_id', 'id']);
-        if (driverId) vehicleByDriver.set(driverId, row);
-        if (vehicleId) vehicleByVehicleId.set(vehicleId, row);
+      const vehicles = (vehicleRes.data || []) as VehicleRow[];
+      const vehicleStatusRows = (vehicleStatusRes.data || []) as VehicleStatusRow[];
+      const vehicleByDriverName = new Map<string, VehicleRow>();
+      vehicles.forEach((v) => {
+        if (v.driver_name) vehicleByDriverName.set(v.driver_name, v);
+      });
+      const statusByVehicleId = new Map<string, VehicleStatusRow>();
+      vehicleStatusRows.forEach((s) => {
+        if (s.vehicle_id) statusByVehicleId.set(s.vehicle_id, s);
       });
 
-      const mappedDrivers = ((driverRes.data || []) as Record<string, unknown>[])
-        .map((row) => {
-          const id = getFirstString(row, ['id']) || '';
-          const vehicleId = getFirstString(row, ['vehicle_id']);
-          const matchedVehicle =
-            (id ? vehicleByDriver.get(id) : undefined) ||
-            (vehicleId ? vehicleByVehicleId.get(vehicleId) : undefined);
+      vehicleByDriverNameRef.current = vehicleByDriverName;
+      statusByVehicleIdRef.current = statusByVehicleId;
 
-          const lat =
-            getFirstNumber(row, ['current_latitude', 'last_lat', 'lat']) ??
-            getFirstNumber(matchedVehicle || {}, ['latitude', 'lat']);
-          const lng =
-            getFirstNumber(row, ['current_longitude', 'last_lng', 'lng']) ??
-            getFirstNumber(matchedVehicle || {}, ['longitude', 'lng']);
-
-          if (lat === null || lng === null) return null;
-
-          return {
-            id,
-            name: getFirstString(row, ['name', 'full_name']) || `Driver ${id.slice(0, 8)}`,
-            status: (getFirstString(row, ['status']) || 'unknown').toLowerCase(),
-            lat,
-            lng,
-            updatedAt: getFirstString(row, ['updated_at', 'last_location_updated_at']),
-            vehicleId,
-            battery: getFirstNumber(matchedVehicle || {}, ['battery_level']),
-          } as DriverLive;
-        })
+      const mappedDrivers = ((driverRes.data || []) as DriverRow[])
+        .map((row) => mapDriverLive(row, vehicleByDriverName, statusByVehicleId))
         .filter((driver): driver is DriverLive => driver !== null);
 
-      const mappedDeliveries = ((deliveryRes.data || []) as Record<string, unknown>[]).map((row) => ({
-        id: getFirstString(row, ['id']) || '',
-        commodityName: getFirstString(row, ['commodity_name', 'commodity']) || 'Unknown',
-        quantity: getFirstNumber(row, ['quantity']) || 0,
-        status: (getFirstString(row, ['status']) || 'pending').toLowerCase(),
-        driverId: getFirstString(row, ['driver_id', 'assigned_driver_id']),
-        eta: getFirstString(row, ['estimated_arrival', 'eta']),
-        createdAt: getFirstString(row, ['created_at']),
-        pickupLat: getFirstNumber(row, ['pickup_lat', 'pickup_latitude']),
-        pickupLng: getFirstNumber(row, ['pickup_lng', 'pickup_longitude']),
-        dropLat: getFirstNumber(row, ['drop_lat', 'drop_latitude']),
-        dropLng: getFirstNumber(row, ['drop_lng', 'drop_longitude']),
-      }));
+      const mappedDeliveries = ((deliveryRes.data || []) as DeliveryRow[]).map((row) => mapDeliveryLive(row));
 
-      setDrivers(mappedDrivers);
-      setDeliveries(mappedDeliveries);
-      setLastUpdated(new Date().toISOString());
+      if (isMounted.current) {
+        setDrivers(mappedDrivers);
+        setDeliveries(mappedDeliveries);
+        const nowIso = new Date().toISOString();
+        setLastUpdated(nowIso);
+        setKpiUpdatedAt({ deliveries: nowIso, drivers: nowIso, alerts: nowIso });
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+      if (isMounted.current) {
+        setError(err instanceof Error ? err.message : 'Failed to load dashboard');
+      }
     } finally {
-      setInitialLoading(false);
+      if (isMounted.current) {
+        setInitialLoading(false);
+      }
     }
   }, []);
 
@@ -255,24 +305,91 @@ export function LogisticsOperatorDashboard() {
 
     const driversChannel = supabase
       .channel('admin-drivers-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => {
-        void hydrateDashboard();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, (payload) => {
+        const nextRow = (payload.new || payload.old) as DriverRow;
+        const rowId = nextRow?.id;
+        const mapped =
+          rowId
+            ? mapDriverLive(nextRow, vehicleByDriverNameRef.current, statusByVehicleIdRef.current)
+            : null;
+        if (!rowId) return;
+
+        if (payload.eventType === 'DELETE') {
+          setDrivers((prev) => prev.filter((driver) => driver.id !== rowId));
+          return;
+        }
+
+        if (!mapped) return;
+        setDrivers((prev) => {
+          const exists = prev.some((driver) => driver.id === mapped.id);
+          if (!exists) return [mapped, ...prev];
+          return prev.map((driver) => (driver.id === mapped.id ? mapped : driver));
+        });
+        setKpiUpdatedAt((prev) => ({ ...prev, drivers: new Date().toISOString() }));
       })
-      .subscribe();
+      .subscribe((status) => {
+        setRealtimeStatus((prev) => ({ ...prev, drivers: status }));
+      });
 
     const vehicleStatusChannel = supabase
       .channel('admin-vehicle-status-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicle_status' }, () => {
-        void hydrateDashboard();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicle_status' }, (payload) => {
+        const nextRow = (payload.new || payload.old) as VehicleStatusRow;
+        const vehicleId = nextRow?.vehicle_id;
+        if (!vehicleId) return;
+        const lat = toNumber(nextRow.latitude);
+        const lng = toNumber(nextRow.longitude);
+        const battery = toNumber(nextRow.battery_level);
+        const status = (nextRow.status || 'unknown').toLowerCase();
+        const updatedAt = null;
+
+        statusByVehicleIdRef.current.set(vehicleId, nextRow);
+
+        setDrivers((prev) =>
+          prev.map((driver) =>
+            driver.vehicleId === vehicleId
+              ? {
+                  ...driver,
+                  lat: lat ?? driver.lat,
+                  lng: lng ?? driver.lng,
+                  battery: battery ?? driver.battery,
+                  status: status || driver.status,
+                  updatedAt: updatedAt ?? driver.updatedAt,
+                }
+              : driver
+          )
+        );
+        setKpiUpdatedAt((prev) => ({ ...prev, drivers: new Date().toISOString() }));
       })
-      .subscribe();
+      .subscribe((status) => {
+        setRealtimeStatus((prev) => ({ ...prev, vehicle: status }));
+      });
 
     const deliveriesChannel = supabase
       .channel('admin-deliveries-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_imports' }, () => {
-        void hydrateDashboard();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, (payload) => {
+        const nextRow = (payload.new || payload.old) as DeliveryRow;
+        const rowId = nextRow?.id;
+        if (!rowId) return;
+
+        if (payload.eventType === 'DELETE') {
+          setDeliveries((prev) => prev.filter((delivery) => delivery.id !== rowId));
+          return;
+        }
+
+        const mapped = mapDeliveryLive(nextRow);
+        setDeliveries((prev) => {
+          const exists = prev.some((delivery) => delivery.id === mapped.id);
+          if (!exists) return [mapped, ...prev].slice(0, 200);
+          return prev.map((delivery) => (delivery.id === mapped.id ? mapped : delivery));
+        });
+        const nowIso = new Date().toISOString();
+        setLastUpdated(nowIso);
+        setKpiUpdatedAt((prev) => ({ ...prev, deliveries: nowIso }));
       })
-      .subscribe();
+      .subscribe((status) => {
+        setRealtimeStatus((prev) => ({ ...prev, deliveries: status }));
+      });
 
     return () => {
       supabase.removeChannel(driversChannel);
@@ -283,10 +400,10 @@ export function LogisticsOperatorDashboard() {
 
   const kpi = useMemo<KPIState>(() => {
     const now = Date.now();
-    const delivered = deliveries.filter((d) => d.status === 'delivered' || d.status === 'completed');
+    const delivered = deliveries.filter((d) => d.status === 'completed');
     const delayed = deliveries.filter((d) => {
       if (!d.eta) return false;
-      if (d.status === 'delivered' || d.status === 'completed') return false;
+      if (d.status === 'completed') return false;
       const etaMs = new Date(d.eta).getTime();
       return Number.isFinite(etaMs) && etaMs < now;
     });
@@ -295,6 +412,17 @@ export function LogisticsOperatorDashboard() {
       return new Date(d.createdAt).getTime() <= new Date(d.eta).getTime();
     }).length;
     const activeDrivers = drivers.filter((d) => realtimeStatuses.has(d.status)).length;
+    const vehicleLoadMap = deliveries.reduce((acc, d) => {
+      if (d.status === 'completed') return acc;
+      if (!d.driverId) return acc;
+      acc[d.driverId] = (acc[d.driverId] || 0) + (d.quantity || 0);
+      return acc;
+    }, {} as Record<string, number>);
+    const totalCapacity = drivers.reduce((sum, d) => sum + (d.capacity || 0), 0);
+    const usedCapacity = drivers.reduce((sum, d) => sum + (vehicleLoadMap[d.id] || 0), 0);
+    const utilizationPct = totalCapacity > 0 ? Math.round((usedCapacity / totalCapacity) * 100) : 0;
+    const completionRatePct =
+      deliveries.length > 0 ? Math.round((delivered.length / deliveries.length) * 100) : 0;
 
     return {
       totalDeliveries: deliveries.length,
@@ -304,8 +432,54 @@ export function LogisticsOperatorDashboard() {
       onTimePct: delivered.length > 0 ? Math.round((onTimeDelivered / delivered.length) * 100) : 0,
       activeDrivers,
       alerts: alerts.length,
+      utilizationPct,
+      completionRatePct,
     };
   }, [deliveries, drivers, alerts.length]);
+
+  useEffect(() => {
+    const prev = prevCountsRef.current;
+    if (kpi.totalDeliveries > prev.deliveries) {
+      setFlashDeliveries(true);
+      setTimeout(() => setFlashDeliveries(false), 800);
+    }
+    if (kpi.activeDrivers > prev.activeDrivers) {
+      setFlashDrivers(true);
+      setTimeout(() => setFlashDrivers(false), 800);
+    }
+    prevCountsRef.current = { deliveries: kpi.totalDeliveries, activeDrivers: kpi.activeDrivers };
+  }, [kpi.totalDeliveries, kpi.activeDrivers]);
+
+  const mapCenter = useMemo(() => {
+    const active = drivers.filter((d) => realtimeStatuses.has(d.status));
+    if (active.length === 0) return { lat: 12.9716, lng: 77.5946 };
+    const avgLat = active.reduce((sum, d) => sum + d.lat, 0) / active.length;
+    const avgLng = active.reduce((sum, d) => sum + d.lng, 0) / active.length;
+    return { lat: avgLat, lng: avgLng };
+  }, [drivers]);
+
+  const realtimeConnected = useMemo(() => {
+    return [realtimeStatus.drivers, realtimeStatus.vehicle, realtimeStatus.deliveries].every(
+      (status) => status === 'SUBSCRIBED'
+    );
+  }, [realtimeStatus]);
+
+  const insight = useMemo(() => {
+    const highPriorityPending = deliveries.filter(
+      (d) => d.status === 'assigned' && (d.priority || '').toLowerCase() === 'high'
+    ).length;
+    const idleDrivers = drivers.filter((d) => d.status === 'idle').length;
+    if (highPriorityPending > 0 && idleDrivers > 0) {
+      return `${highPriorityPending} high-priority deliveries awaiting assignment with ${idleDrivers} idle drivers.`;
+    }
+    if (highPriorityPending > 0) {
+      return `${highPriorityPending} high-priority deliveries are waiting for assignment.`;
+    }
+    if (idleDrivers > 0) {
+      return `${idleDrivers} idle drivers available for new assignments.`;
+    }
+    return 'System balanced. No immediate bottlenecks detected.';
+  }, [deliveries, drivers]);
 
   useEffect(() => {
     const now = Date.now();
@@ -337,7 +511,6 @@ export function LogisticsOperatorDashboard() {
       if (
         Number.isFinite(etaMs) &&
         etaMs < now &&
-        delivery.status !== 'delivered' &&
         delivery.status !== 'completed'
       ) {
         generatedAlerts.push({
@@ -348,42 +521,44 @@ export function LogisticsOperatorDashboard() {
       }
     });
 
-    setAlerts(generatedAlerts.slice(0, 6));
+      setAlerts(generatedAlerts.slice(0, 6));
+    setKpiUpdatedAt((prev) => ({ ...prev, alerts: new Date().toISOString() }));
   }, [drivers, deliveries]);
 
   const suggestions = useMemo<RouteSuggestion[]>(() => {
     const idleDrivers = drivers.filter((d) => d.status === 'idle');
     const pendingDeliveries = deliveries.filter(
       (d) =>
-        d.status === 'pending' &&
+        d.status === 'assigned' &&
         d.pickupLat !== null &&
         d.pickupLng !== null
     );
     if (idleDrivers.length === 0) return [];
-
-    return pendingDeliveries
-      .map((delivery) => {
-        let bestDriver = idleDrivers[0];
-        let bestDistance = Number.POSITIVE_INFINITY;
-        idleDrivers.forEach((driver) => {
-          const distance = getDistanceKm(
-            driver.lat,
-            driver.lng,
-            delivery.pickupLat as number,
-            delivery.pickupLng as number
-          );
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            bestDriver = driver;
-          }
-        });
-        return {
-          deliveryId: delivery.id,
-          driverName: bestDriver.name,
-          distanceKm: Math.round(bestDistance * 10) / 10,
-        };
-      })
-      .slice(0, 5);
+    const pendingDelivery = pendingDeliveries[0];
+    if (!pendingDelivery) return [];
+    const best = idleDrivers.reduce(
+      (nearest, driver) => {
+        const distance = getDistanceKm(
+          driver.lat,
+          driver.lng,
+          pendingDelivery.pickupLat as number,
+          pendingDelivery.pickupLng as number
+        );
+        if (!nearest || distance < nearest.distance) {
+          return { driver, distance };
+        }
+        return nearest;
+      },
+      null as { driver: DriverLive; distance: number } | null
+    );
+    if (!best) return [];
+    return [
+      {
+        deliveryId: pendingDelivery.id,
+        driverName: best.driver.name,
+        distanceKm: Math.round(best.distance * 10) / 10,
+      },
+    ];
   }, [drivers, deliveries]);
 
   if (checkingAuth || initialLoading) {
@@ -403,6 +578,15 @@ export function LogisticsOperatorDashboard() {
           title="Logistics Operator Dashboard"
           subtitle="Live command center for drivers, deliveries, and SmartRoute actions"
         />
+        <div className="flex justify-end mb-3">
+          <span
+            className={`px-3 py-1 rounded-full text-xs font-medium ${
+              realtimeConnected ? 'bg-emerald-500/20 text-emerald-200' : 'bg-red-500/20 text-red-200'
+            }`}
+          >
+            {realtimeConnected ? 'Realtime Connected' : 'Realtime Disconnected'}
+          </span>
+        </div>
 
         {error && (
           <GlassCard className="mb-6">
@@ -417,10 +601,49 @@ export function LogisticsOperatorDashboard() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
-          <KPICard icon={Package} label="Total Deliveries" value={kpi.totalDeliveries} />
-          <KPICard icon={Truck} label="Active Deliveries" value={kpi.activeDeliveries} />
-          <KPICard icon={Clock} label="Delayed Deliveries" value={kpi.delayedDeliveries} />
-          <KPICard icon={Users} label="Active Drivers" value={kpi.activeDrivers} />
+          <div className={flashDeliveries ? 'ring-2 ring-emerald-400/60 rounded-3xl' : ''}>
+            <KPICard
+              icon={Package}
+              label="Total Deliveries"
+              value={kpi.totalDeliveries}
+              change={kpiUpdatedAt.deliveries ? `Updated ${new Date(kpiUpdatedAt.deliveries).toLocaleTimeString()}` : undefined}
+            />
+          </div>
+          <KPICard
+            icon={Truck}
+            label="Active Deliveries"
+            value={kpi.activeDeliveries}
+            change={kpiUpdatedAt.deliveries ? `Updated ${new Date(kpiUpdatedAt.deliveries).toLocaleTimeString()}` : undefined}
+          />
+          <KPICard
+            icon={Clock}
+            label="Delayed Deliveries"
+            value={kpi.delayedDeliveries}
+            change={kpiUpdatedAt.deliveries ? `Updated ${new Date(kpiUpdatedAt.deliveries).toLocaleTimeString()}` : undefined}
+          />
+          <div className={flashDrivers ? 'ring-2 ring-emerald-400/60 rounded-3xl' : ''}>
+            <KPICard
+              icon={Users}
+              label="Active Drivers"
+              value={kpi.activeDrivers}
+              change={kpiUpdatedAt.drivers ? `Updated ${new Date(kpiUpdatedAt.drivers).toLocaleTimeString()}` : undefined}
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+          <KPICard
+            icon={Route}
+            label="Fleet Utilization"
+            value={`${kpi.utilizationPct}%`}
+            change={kpiUpdatedAt.deliveries ? `Updated ${new Date(kpiUpdatedAt.deliveries).toLocaleTimeString()}` : undefined}
+          />
+          <KPICard
+            icon={Package}
+            label="Completion Rate"
+            value={`${kpi.completionRatePct}%`}
+            change={kpiUpdatedAt.deliveries ? `Updated ${new Date(kpiUpdatedAt.deliveries).toLocaleTimeString()}` : undefined}
+          />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
@@ -430,22 +653,29 @@ export function LogisticsOperatorDashboard() {
               {isGoogleLoaded ? (
                 <GoogleMap
                   mapContainerClassName="h-full w-full"
-                  center={{
-                    lat: drivers[0]?.lat ?? 12.9716,
-                    lng: drivers[0]?.lng ?? 77.5946,
-                  }}
+                  center={mapCenter}
                   zoom={12}
                   options={{
                     streetViewControl: false,
                     mapTypeControl: false,
                     fullscreenControl: false,
+                    mapId: GOOGLE_MAP_ID || undefined,
                   }}
                 >
                   {drivers.map((driver) => (
-                    <MarkerF
+                    <AdvancedMarker
                       key={driver.id}
                       position={{ lat: driver.lat, lng: driver.lng }}
                       title={`${driver.name} | ${driver.status} | Battery: ${driver.battery ?? 'N/A'}%`}
+                      color={
+                        driver.battery !== null && driver.battery < 10
+                          ? '#ef4444'
+                          : driver.battery !== null && driver.battery < 20
+                          ? '#f97316'
+                          : '#22d3ee'
+                      }
+                      size={driver.battery !== null && driver.battery < 10 ? 16 : 14}
+                      enabled={Boolean(GOOGLE_MAP_ID)}
                     />
                   ))}
                 </GoogleMap>
@@ -523,7 +753,7 @@ export function LogisticsOperatorDashboard() {
             <div className="space-y-3">
               {suggestions.length === 0 && (
                 <p className="text-secondary-urban text-sm">
-                  No pending deliveries with assignable idle drivers right now.
+                  No assigned deliveries with idle drivers right now.
                 </p>
               )}
               {suggestions.map((item) => (
@@ -537,10 +767,15 @@ export function LogisticsOperatorDashboard() {
               ))}
             </div>
             <div className="mt-4 text-xs text-muted-urban">
-              On-time: {kpi.onTimePct}% • Completed: {kpi.completedDeliveries} • Alerts: {kpi.alerts}
+              On-time: {kpi.onTimePct}% - Completed: {kpi.completedDeliveries} - Alerts: {kpi.alerts}
             </div>
           </GlassCard>
         </div>
+
+        <GlassCard className="mb-6">
+          <h2 className="text-lg text-primary-urban mb-2">Insight</h2>
+          <p className="text-secondary-urban text-sm">{insight}</p>
+        </GlassCard>
 
         <LoadConsolidationDashboard />
         <CO2Dashboard />

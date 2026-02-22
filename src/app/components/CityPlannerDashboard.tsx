@@ -1,12 +1,4 @@
-import { useEffect, useState } from 'react';
-import { DashboardHeader } from './DashboardHeader';
-import { GlassCard } from './GlassCard';
-import { KPICard } from './KPICard';
-import { supabase } from '../../services/supabaseClient';
-import { CircleF, GoogleMap, InfoWindowF, useJsApiLoader } from '@react-google-maps/api';
-import { Activity, TrendingUp, CheckCircle } from 'lucide-react';
-
-const ZONE_COORDS: Record<string, [number, number]> = {
+import { useEffect, useState } from 'react';import { DashboardHeader } from './DashboardHeader';import { GlassCard } from './GlassCard';import { KPICard } from './KPICard';import { supabase } from '../../services/supabaseClient';import { CircleF, GoogleMap, InfoWindowF, useJsApiLoader } from '@react-google-maps/api';import { GOOGLE_MAP_ID, GOOGLE_MAPS_API_KEY, MAP_LIBRARIES } from './maps/googleMapsConfig';import { Activity, TrendingUp, CheckCircle } from 'lucide-react';const ZONE_COORDS: Record<string, [number, number]> = {
   'T. Nagar': [13.0418, 80.2341],
   Guindy: [13.01, 80.22],
   'Anna Nagar': [13.085, 80.2101],
@@ -33,6 +25,8 @@ type Operator = {
   compliance: number;
 };
 
+type RowLike = Record<string, unknown>;
+
 const densityColor = (density: string) =>
   density === 'high' ? 'red' : density === 'medium' ? 'orange' : 'green';
 
@@ -46,11 +40,11 @@ const aqiLevel = (aqi: number) => {
 };
 
 export function CityPlannerDashboard() {
-  const googleMapsApiKey =
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyBthAa_IcLPDqnl8mZtk7XfcQRtFbDXl_E';
+  const googleMapsApiKey = GOOGLE_MAPS_API_KEY;
   const { isLoaded: isGoogleLoaded } = useJsApiLoader({
     id: 'urbanflow-google-maps',
     googleMapsApiKey,
+    libraries: MAP_LIBRARIES,
   });
 
   const [zones, setZones] = useState<Zone[]>([]);
@@ -89,7 +83,59 @@ export function CityPlannerDashboard() {
       setOperators((operatorsRes.data || []) as Operator[]);
     };
 
-    loadData();
+    void loadData();
+
+    const applyUpsert = <T extends { id: string }>(
+      prev: T[],
+      mapped: T,
+      eventType: string
+    ): T[] => {
+      if (eventType === 'DELETE') {
+        return prev.filter((item) => item.id !== mapped.id);
+      }
+      const exists = prev.some((item) => item.id === mapped.id);
+      if (!exists) return [mapped, ...prev];
+      return prev.map((item) => (item.id === mapped.id ? mapped : item));
+    };
+
+    const channel = supabase
+      .channel('city-planner-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'freight_zones' }, (payload) => {
+        const row = (payload.new || payload.old) as RowLike;
+        const mapped: Zone = {
+          id: String(row.id ?? ''),
+          name: String(row.name ?? row.zone ?? ''),
+          density: String(row.density ?? row.activity_level ?? 'low') as Zone['density'],
+        };
+        if (!mapped.id) return;
+        setZones((prev) => applyUpsert(prev, mapped, payload.eventType));
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'aqi_readings' }, (payload) => {
+        const row = (payload.new || payload.old) as RowLike;
+        const mapped: AQI = {
+          id: String(row.id ?? ''),
+          area: String(row.area ?? ''),
+          aqi: Number(row.aqi ?? 0),
+        };
+        if (!mapped.id) return;
+        setAqi((prev) => applyUpsert(prev, mapped, payload.eventType));
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'operator_compliance' }, (payload) => {
+        const row = (payload.new || payload.old) as RowLike;
+        const mapped: Operator = {
+          id: String(row.id ?? ''),
+          name: String(row.name ?? ''),
+          vehicles: Number(row.vehicles ?? 0),
+          compliance: Number(row.compliance ?? 0),
+        };
+        if (!mapped.id) return;
+        setOperators((prev) => applyUpsert(prev, mapped, payload.eventType));
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   return (
@@ -137,6 +183,7 @@ export function CityPlannerDashboard() {
                 streetViewControl: false,
                 mapTypeControl: false,
                 fullscreenControl: false,
+                mapId: GOOGLE_MAP_ID || undefined,
               }}
             >
               {zones.map((zone) => {

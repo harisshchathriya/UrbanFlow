@@ -1,6 +1,4 @@
-import { useEffect, useState } from 'react';
-
-export interface DriverLocation {
+import { useEffect, useState } from 'react';export interface DriverLocation {
   latitude: number;
   longitude: number;
 }

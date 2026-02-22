@@ -1,19 +1,18 @@
 import React, { useRef, useState } from "react";
-import { parseFile } from "../../../engine/utils/csvParser";
-import { upsertDeliveryImports } from "../../../services/deliveryService";
-
-interface CSVImportButtonProps {
+import { parseFile } from '../../../engine/utils/csvParser';import { DeliveryInsertInput, insertDeliveries } from '../../../services/deliveryService';interface CSVImportButtonProps {
   onSuccess: () => void;
+  driverId?: string | null;
+  vehicleId?: string | null;
 }
 
-const CSVImportButton: React.FC<CSVImportButtonProps> = ({ onSuccess }) => {
+const CSVImportButton: React.FC<CSVImportButtonProps> = ({ onSuccess, driverId, vehicleId }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   const handleClick = () => {
-    if (!loading) {
+    if (!loading && driverId) {
       fileInputRef.current?.click();
     }
   };
@@ -41,14 +40,40 @@ const CSVImportButton: React.FC<CSVImportButtonProps> = ({ onSuccess }) => {
         throw new Error("Invalid file type. Upload CSV or XLSX.");
       }
 
-      const deliveries = await parseFile(file);
+      const parsedRows = await parseFile(file);
 
-      if (!deliveries || deliveries.length === 0) {
+      if (!parsedRows || parsedRows.length === 0) {
         throw new Error("No valid delivery records found.");
       }
 
-      await upsertDeliveryImports(deliveries);
-      setMessage(`Imported ${deliveries.length} delivery record(s).`);
+      const nowIso = new Date().toISOString();
+      const payloads: DeliveryInsertInput[] = parsedRows.map((row) => {
+        const resolvedDriverId = row.driver_id || driverId;
+        if (!resolvedDriverId) {
+          throw new Error("Driver ID is required for every imported row.");
+        }
+        if (row.driver_id && driverId && row.driver_id !== driverId) {
+          throw new Error("Driver ID in CSV must match the selected driver.");
+        }
+        return {
+          pickup_location: row.pickup_location,
+          dropoff_location: row.dropoff_location,
+          from_lat: row.from_lat,
+          from_lng: row.from_lng,
+          to_lat: row.to_lat,
+          to_lng: row.to_lng,
+          packages: row.packages,
+          weight: row.weight ?? 0,
+          priority: row.priority || "Medium",
+          status: "assigned",
+          driver_id: resolvedDriverId,
+          vehicle_id: row.vehicle_id || vehicleId || null,
+          created_at: nowIso,
+        };
+      });
+
+      await insertDeliveries(payloads);
+      setMessage(`Imported ${payloads.length} delivery record(s).`);
 
       onSuccess();
     } catch (err: any) {
@@ -67,7 +92,7 @@ const CSVImportButton: React.FC<CSVImportButtonProps> = ({ onSuccess }) => {
     <div>
       <button
         onClick={handleClick}
-        disabled={loading}
+        disabled={loading || !driverId}
         className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
       >
         {loading ? "Importing..." : "Import CSV"}
@@ -81,6 +106,11 @@ const CSVImportButton: React.FC<CSVImportButtonProps> = ({ onSuccess }) => {
         className="hidden"
       />
 
+      {!driverId && (
+        <p className="text-amber-700 text-sm mt-2">
+          Select a driver before importing.
+        </p>
+      )}
       {error && (
         <p className="text-red-600 text-sm mt-2">
           {error}

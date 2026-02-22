@@ -1,74 +1,67 @@
-import { supabase } from './supabaseClient';
-
-export type DeliveryImportStatus =
-  | 'pending'
+import { supabase } from './supabaseClient';export type DeliveryStatus =
   | 'assigned'
+  | 'accepted'
   | 'in_transit'
-  | 'delivered'
   | 'completed'
+  | 'rejected'
   | 'cancelled';
 
-export interface DeliveryImport {
+export type DeliveryPriority = 'High' | 'Medium' | 'Low';
+
+export interface DeliveryRecord {
   id: string;
-  commodity_name: string;
-  quantity: number;
-  pickup_lat: number;
-  pickup_lng: number;
-  drop_lat: number;
-  drop_lng: number;
-  status: DeliveryImportStatus;
+  pickup_location: string;
+  dropoff_location: string;
+  from_lat: number;
+  from_lng: number;
+  to_lat: number;
+  to_lng: number;
+  packages: number;
+  weight: number;
+  priority: DeliveryPriority;
+  status: DeliveryStatus;
+  driver_id: string | null;
+  vehicle_id: string | null;
   created_at: string;
 }
 
-export type DeliveryImportInput = Omit<DeliveryImport, 'id' | 'created_at' | 'status'> & {
-  status?: DeliveryImportStatus;
+export type DeliveryCsvRow = {
+  pickup_location: string;
+  dropoff_location: string;
+  from_lat: number;
+  from_lng: number;
+  to_lat: number;
+  to_lng: number;
+  packages: number;
+  weight?: number;
+  priority?: DeliveryPriority;
+  driver_id?: string;
+  vehicle_id?: string | null;
 };
 
-export const fetchDeliveryImports = async (): Promise<DeliveryImport[]> => {
+export type DeliveryInsertInput = Omit<DeliveryRecord, 'id' | 'created_at'> & {
+  created_at?: string;
+};
+
+export const fetchDeliveries = async (): Promise<DeliveryRecord[]> => {
   const { data, error } = await supabase
-    .from('delivery_imports')
+    .from('deliveries')
     .select('*')
     .order('created_at', { ascending: false });
 
   if (error) throw new Error(error.message);
-  return data || [];
+  return ((data || []) as DeliveryRow[]).map(normalizeDelivery);
 };
 
-export const upsertDeliveryImports = async (imports: DeliveryImportInput[]): Promise<void> => {
+export const insertDeliveries = async (rows: DeliveryInsertInput[]): Promise<void> => {
   const { error } = await supabase
-    .from('delivery_imports')
-    .insert(imports);
+    .from('deliveries')
+    .insert(rows);
 
   if (error) throw new Error(error.message);
 };
 
-export type DeliveryStatus = 'assigned' | 'accepted' | 'declined' | 'completed';
-
-export interface Delivery {
-  delivery_id: string;
-  driver_id: string;
-  pickup_lat: number;
-  pickup_lng: number;
-  destination_lat: number;
-  destination_lng: number;
-  address: string;
-  load_details: string;
-  status: DeliveryStatus;
-  delivery_date: string;
-}
-
-type DeliveryRow = {
-  delivery_id: unknown;
-  driver_id: unknown;
-  pickup_lat: unknown;
-  pickup_lng: unknown;
-  destination_lat: unknown;
-  destination_lng: unknown;
-  address: unknown;
-  load_details: unknown;
-  status: unknown;
-  delivery_date: unknown;
-};
+type DeliveryRow = Record<string, unknown>;
 
 const parseNumber = (value: unknown): number => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -80,23 +73,37 @@ const parseNumber = (value: unknown): number => {
 
 const parseStatus = (value: unknown): DeliveryStatus => {
   const status = String(value || '').toLowerCase();
-  if (status === 'accepted' || status === 'declined' || status === 'completed') {
+  if (
+    status === 'assigned' ||
+    status === 'accepted' ||
+    status === 'in_transit' ||
+    status === 'completed' ||
+    status === 'rejected' ||
+    status === 'cancelled'
+  ) {
     return status;
   }
+  if (status === 'pending') return 'assigned';
+  if (status === 'delivered') return 'completed';
+  if (status === 'declined') return 'rejected';
   return 'assigned';
 };
 
-const normalizeDelivery = (row: DeliveryRow): Delivery => ({
-  delivery_id: String(row.delivery_id ?? ''),
-  driver_id: String(row.driver_id ?? ''),
-  pickup_lat: parseNumber(row.pickup_lat),
-  pickup_lng: parseNumber(row.pickup_lng),
-  destination_lat: parseNumber(row.destination_lat),
-  destination_lng: parseNumber(row.destination_lng),
-  address: String(row.address ?? ''),
-  load_details: String(row.load_details ?? ''),
+const normalizeDelivery = (row: DeliveryRow): DeliveryRecord => ({
+  id: String(row.id ?? row.delivery_id ?? ''),
+  pickup_location: String(row.pickup_location ?? row.pickup_address ?? ''),
+  dropoff_location: String(row.dropoff_location ?? row.dropoff_address ?? ''),
+  from_lat: parseNumber(row.from_lat ?? row.pickup_lat ?? row.pickup_latitude),
+  from_lng: parseNumber(row.from_lng ?? row.pickup_lng ?? row.pickup_longitude),
+  to_lat: parseNumber(row.to_lat ?? row.drop_lat ?? row.delivery_latitude ?? row.drop_latitude),
+  to_lng: parseNumber(row.to_lng ?? row.drop_lng ?? row.delivery_longitude ?? row.drop_longitude),
+  packages: parseNumber(row.packages ?? row.quantity ?? row.package_count),
+  weight: parseNumber(row.weight ?? row.load_weight),
+  priority: (row.priority as DeliveryPriority) || 'Medium',
   status: parseStatus(row.status),
-  delivery_date: String(row.delivery_date ?? ''),
+  driver_id: row.driver_id ? String(row.driver_id) : null,
+  vehicle_id: row.vehicle_id ? String(row.vehicle_id) : null,
+  created_at: String(row.created_at ?? ''),
 });
 
 const getTodayDate = (): string => {
@@ -107,14 +114,15 @@ const getTodayDate = (): string => {
   return `${year}-${month}-${day}`;
 };
 
-export const getTodaysDeliveries = async (driverId: string): Promise<Delivery[]> => {
+export const getTodaysDeliveries = async (driverId: string): Promise<DeliveryRecord[]> => {
   const today = getTodayDate();
   const { data, error } = await supabase
     .from('deliveries')
     .select('*')
     .eq('driver_id', driverId)
-    .eq('delivery_date', today)
-    .order('delivery_id', { ascending: false });
+    .gte('created_at', `${today}T00:00:00.000Z`)
+    .in('status', ['assigned', 'accepted', 'in_transit'])
+    .order('created_at', { ascending: false });
 
   if (error) {
     throw new Error(`Failed to fetch today's deliveries: ${error.message}`);
@@ -123,11 +131,11 @@ export const getTodaysDeliveries = async (driverId: string): Promise<Delivery[]>
   return ((data || []) as DeliveryRow[]).map(normalizeDelivery);
 };
 
-export const getDeliveryById = async (deliveryId: string): Promise<Delivery | null> => {
+export const getDeliveryById = async (deliveryId: string): Promise<DeliveryRecord | null> => {
   const { data, error } = await supabase
     .from('deliveries')
     .select('*')
-    .eq('delivery_id', deliveryId)
+    .eq('id', deliveryId)
     .maybeSingle();
 
   if (error) {
@@ -148,7 +156,7 @@ export const updateDeliveryStatus = async (
   const { error } = await supabase
     .from('deliveries')
     .update({ status })
-    .eq('delivery_id', deliveryId);
+    .eq('id', deliveryId);
 
   if (error) {
     throw new Error(`Failed to update delivery ${deliveryId} to ${status}: ${error.message}`);

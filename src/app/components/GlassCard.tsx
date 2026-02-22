@@ -1,6 +1,4 @@
-import { ReactNode } from 'react';
-
-interface GlassCardProps {
+import { ReactNode } from 'react';interface GlassCardProps {
   children: ReactNode;
   className?: string;
   strong?: boolean;

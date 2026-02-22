@@ -1,19 +1,4 @@
-import { useEffect, useState } from 'react';
-import { supabase } from '../../services/supabaseClient';
-import { GlassCard } from './GlassCard';
-import { KPICard } from './KPICard';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Leaf, Calendar, TrendingUp, Award } from 'lucide-react';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from 'recharts';
-
-type EmissionMatch = {
+import { useEffect, useState } from 'react';import { supabase } from '../../services/supabaseClient';import { GlassCard } from './GlassCard';import { KPICard } from './KPICard';import { LoadingSpinner } from './LoadingSpinner';import { Leaf, Calendar, TrendingUp, Award } from 'lucide-react';import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';type EmissionMatch = {
   id: string;
   co2: number;
   created_at: string;
@@ -70,7 +55,7 @@ export function CO2Dashboard() {
   }, [matches]);
 
   useEffect(() => {
-    const fetchMatches = async () => {
+    const fetchInitialMatches = async () => {
       setLoading(true);
       setError(null);
 
@@ -88,14 +73,39 @@ export function CO2Dashboard() {
       setLoading(false);
     };
 
-    fetchMatches();
+    void fetchInitialMatches();
 
     const subscription = supabase
       .channel('co2-dashboard')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'consolidation_matches' },
-        fetchMatches
+        (payload) => {
+          const row = (payload.new || payload.old) as Partial<EmissionMatch>;
+          const rowId = String(row.id ?? '');
+          if (!rowId) return;
+
+          if (payload.eventType === 'DELETE') {
+            setMatches((prev) => prev.filter((match) => match.id !== rowId));
+            return;
+          }
+
+          const mapped: EmissionMatch = {
+            id: rowId,
+            co2: Number(row.co2 ?? 0),
+            created_at: String(row.created_at ?? new Date().toISOString()),
+            route: String(row.route ?? ''),
+            savings: Number(row.savings ?? 0),
+          };
+
+          setMatches((prev) => {
+            const exists = prev.some((match) => match.id === mapped.id);
+            const next = exists
+              ? prev.map((match) => (match.id === mapped.id ? mapped : match))
+              : [mapped, ...prev];
+            return next.sort((a, b) => b.created_at.localeCompare(a.created_at));
+          });
+        }
       )
       .subscribe();
 

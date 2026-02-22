@@ -450,7 +450,7 @@ export function matchLoads(
 ): ConsolidationResult {
   const openDeliveries = deliveries.filter(
     (d) =>
-      d.status === 'pending' &&
+      d.status === 'assigned' &&
       Number.isFinite(d.from_lat) &&
       Number.isFinite(d.from_lng) &&
       Number.isFinite(d.to_lat) &&

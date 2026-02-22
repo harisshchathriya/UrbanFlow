@@ -1,7 +1,4 @@
-import { LucideIcon } from 'lucide-react';
-import { GlassCard } from './GlassCard';
-
-interface KPICardProps {
+import { LucideIcon } from 'lucide-react';import { GlassCard } from './GlassCard';interface KPICardProps {
   icon: LucideIcon;
   label: string;
   value: string | number;

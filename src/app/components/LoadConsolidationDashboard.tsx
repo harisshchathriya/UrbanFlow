@@ -1,18 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Fuel, Truck, DollarSign, Route } from 'lucide-react';
-import { supabase } from '../../services/supabaseClient';
-import { GlassCard } from './GlassCard';
-import { KPICard } from './KPICard';
-import { LoadingSpinner } from './LoadingSpinner';
-import { GoogleMap, MarkerF, PolylineF, useJsApiLoader } from '@react-google-maps/api';
-import {
-  ConsolidationDelivery,
-  ConsolidationSuggestion,
-  ConsolidationVehicle,
-  matchLoads,
-} from '../../engine/consolidation/LoadMatcher';
-
-type RawRow = Record<string, unknown>;
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';import { Fuel, Truck, DollarSign, Route } from 'lucide-react';import { supabase } from '../../services/supabaseClient';import { GlassCard } from './GlassCard';import { KPICard } from './KPICard';import { LoadingSpinner } from './LoadingSpinner';import { GoogleMap, PolylineF, useJsApiLoader } from '@react-google-maps/api';import { ConsolidationDelivery, ConsolidationSuggestion, ConsolidationVehicle, matchLoads } from '../../engine/consolidation/LoadMatcher';import { AdvancedMarker } from './maps/AdvancedMarker';import { GOOGLE_MAP_ID, GOOGLE_MAPS_API_KEY, MAP_LIBRARIES } from './maps/googleMapsConfig';type RawRow = Record<string, unknown>;
 
 const toNumber = (value: unknown): number => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -36,12 +22,12 @@ const getFirst = (row: RawRow, keys: string[]): unknown => {
 };
 
 export function LoadConsolidationDashboard() {
-  const googleMapsApiKey =
-    import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyBthAa_IcLPDqnl8mZtk7XfcQRtFbDXl_E';
+  const googleMapsApiKey = GOOGLE_MAPS_API_KEY;
 
   const { isLoaded: isGoogleLoaded } = useJsApiLoader({
     id: 'urbanflow-google-maps',
     googleMapsApiKey,
+    libraries: MAP_LIBRARIES,
   });
 
   const [vehicles, setVehicles] = useState<ConsolidationVehicle[]>([]);
@@ -50,102 +36,145 @@ export function LoadConsolidationDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [stableSuggestions, setStableSuggestions] = useState<ConsolidationSuggestion[]>([]);
   const suggestionsSigRef = useRef<string>('');
+  const isMounted = useRef(true);
 
-  const normalizeOrders = (rows: RawRow[]): ConsolidationDelivery[] => {
+  useEffect(() => {
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
+  const normalizeOrders = useCallback((rows: RawRow[]): ConsolidationDelivery[] => {
     return (rows || []).map((row) => ({
-      id: toStringValue(getFirst(row, ['id', 'delivery_id'])),
-      weight: toNumber(getFirst(row, ['weight', 'volume', 'quantity'])),
-      from_lat: toNumber(getFirst(row, ['from_lat', 'pickup_lat', 'location_lat', 'pickup_latitude'])),
-      from_lng: toNumber(getFirst(row, ['from_lng', 'pickup_lng', 'location_lng', 'pickup_longitude'])),
-      to_lat: toNumber(getFirst(row, ['to_lat', 'drop_lat', 'delivery_latitude', 'drop_latitude'])),
-      to_lng: toNumber(getFirst(row, ['to_lng', 'drop_lng', 'delivery_longitude', 'drop_longitude'])),
-      status: toStringValue(getFirst(row, ['status'])) || 'pending',
+      id: toStringValue(getFirst(row, ['id'])),
+      weight: toNumber(getFirst(row, ['weight', 'volume', 'quantity'])) || 0,
+      from_lat: toNumber(getFirst(row, ['from_lat'])) || 0,
+      from_lng: toNumber(getFirst(row, ['from_lng'])) || 0,
+      to_lat: toNumber(getFirst(row, ['to_lat'])) || 0,
+      to_lng: toNumber(getFirst(row, ['to_lng'])) || 0,
+      status: toStringValue(getFirst(row, ['status'])) || 'assigned',
     }));
-  };
+  }, []);
 
-  const normalizeVehicles = (rows: RawRow[]): ConsolidationVehicle[] => {
-    return (rows || []).map((row) => ({
-      id: toStringValue(getFirst(row, ['id', 'vehicle_id'])),
-      capacity: toNumber(getFirst(row, ['capacity'])),
-      current_load: toNumber(getFirst(row, ['current_load', 'currentLoad'])),
-      status: toStringValue(getFirst(row, ['status'])) || 'unknown',
-      lat: toNumber(getFirst(row, ['latitude', 'lat', 'last_lat', 'current_latitude'])),
-      lng: toNumber(getFirst(row, ['longitude', 'lng', 'last_lng', 'current_longitude'])),
-    }));
-  };
+  const normalizeVehicles = useCallback((vehicleRows: RawRow[], statusRows: RawRow[]): ConsolidationVehicle[] => {
+    const statusByVehicleId = new Map<string, RawRow>();
+    (statusRows || []).forEach((row) => {
+      const id = toStringValue(getFirst(row, ['vehicle_id']));
+      if (id) statusByVehicleId.set(id, row);
+    });
 
-  const fetchPendingOrders = async (): Promise<ConsolidationDelivery[]> => {
-    const importsRes = await supabase.from('delivery_imports').select('*').eq('status', 'pending');
+    return (vehicleRows || []).map((row) => {
+      const id = toStringValue(getFirst(row, ['id']));
+      const statusRow = id ? statusByVehicleId.get(id) : undefined;
+      return {
+        id,
+        capacity: toNumber(getFirst(row, ['capacity'])) || 0,
+        current_load: toNumber(getFirst(row, ['current_load', 'currentLoad'])) || 0,
+        status: toStringValue(getFirst(row, ['status'])) || 'unknown',
+        lat: toNumber(getFirst(statusRow || {}, ['latitude'])) || 0,
+        lng: toNumber(getFirst(statusRow || {}, ['longitude'])) || 0,
+      };
+    });
+  }, []);
 
-    if (!importsRes.error) {
-      return normalizeOrders((importsRes.data || []) as RawRow[]);
-    }
-
-    const deliveriesRes = await supabase.from('deliveries').select('*').eq('status', 'pending');
+  const fetchPendingOrders = useCallback(async (): Promise<ConsolidationDelivery[]> => {
+    const deliveriesRes = await supabase.from('deliveries').select('*').eq('status', 'assigned');
 
     if (!deliveriesRes.error) {
       return normalizeOrders((deliveriesRes.data || []) as RawRow[]);
     }
 
-    throw new Error(importsRes.error?.message || deliveriesRes.error?.message || 'Failed to load pending orders');
-  };
+    throw new Error(deliveriesRes.error?.message || 'Failed to load assigned deliveries');
+  }, [normalizeOrders]);
 
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
       setError(null);
       try {
-        const [vehiclesRes, ordersData] = await Promise.all([supabase.from('vehicles').select('*'), fetchPendingOrders()]);
+        const [vehiclesRes, statusRes, ordersData] = await Promise.all([
+          supabase.from('vehicles').select('*'),
+          supabase.from('vehicle_status').select('*'),
+          fetchPendingOrders(),
+        ]);
 
-        if (vehiclesRes.error) {
-          setError(vehiclesRes.error?.message || 'Failed to load consolidation data');
-          setVehicles([]);
-          setOrders([]);
+        if (vehiclesRes.error || statusRes.error) {
+          if (isMounted.current) {
+            setError(vehiclesRes.error?.message || 'Failed to load consolidation data');
+            setVehicles([]);
+            setOrders([]);
+          }
         } else {
-          setVehicles(normalizeVehicles((vehiclesRes.data || []) as RawRow[]));
-          setOrders(ordersData);
+          if (isMounted.current) {
+            setVehicles(normalizeVehicles((vehiclesRes.data || []) as RawRow[], (statusRes.data || []) as RawRow[]));
+            setOrders(ordersData);
+          }
         }
       } catch (err) {
-        setVehicles([]);
-        setOrders([]);
-        setError(err instanceof Error ? err.message : 'Failed to load consolidation data');
+        if (isMounted.current) {
+          setVehicles([]);
+          setOrders([]);
+          setError(err instanceof Error ? err.message : 'Failed to load consolidation data');
+        }
       } finally {
-        setLoading(false);
+        if (isMounted.current) {
+          setLoading(false);
+        }
       }
     };
 
     void fetchData();
-  }, []);
+  }, [fetchPendingOrders, normalizeVehicles]);
 
   useEffect(() => {
     const channel = supabase
       .channel('load_consolidation_live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicles' }, () => {
-        void supabase
-          .from('vehicles')
-          .select('*')
-          .then((r) => {
-            if (!r.error) {
-              setVehicles(normalizeVehicles((r.data || []) as RawRow[]));
-            }
-          });
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicles' }, (payload) => {
+        const row = (payload.new || payload.old) as RawRow;
+        const rowId = toStringValue(getFirst(row, ['id', 'vehicle_id']));
+        if (!rowId) return;
+
+        if (payload.eventType === 'DELETE') {
+          setVehicles((prev) => prev.filter((vehicle) => vehicle.id !== rowId));
+          return;
+        }
+
+        const normalized = normalizeVehicles([row])[0];
+        if (!normalized) return;
+        setVehicles((prev) => {
+          const exists = prev.some((vehicle) => vehicle.id === normalized.id);
+          if (!exists) return [normalized, ...prev];
+          return prev.map((vehicle) => (vehicle.id === normalized.id ? normalized : vehicle));
+        });
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_imports' }, () => {
-        void fetchPendingOrders()
-          .then((ordersData) => setOrders(ordersData))
-          .catch((err) => setError(err instanceof Error ? err.message : 'Failed to refresh orders'));
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, () => {
-        void fetchPendingOrders()
-          .then((ordersData) => setOrders(ordersData))
-          .catch((err) => setError(err instanceof Error ? err.message : 'Failed to refresh orders'));
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'deliveries' }, (payload) => {
+        const row = (payload.new || payload.old) as RawRow;
+        const rowId = toStringValue(getFirst(row, ['id', 'delivery_id']));
+        if (!rowId) return;
+
+        if (payload.eventType === 'DELETE') {
+          setOrders((prev) => prev.filter((order) => order.id !== rowId));
+          return;
+        }
+
+        const normalized = normalizeOrders([row])[0];
+        if (!normalized || normalized.status !== 'assigned') {
+          setOrders((prev) => prev.filter((order) => order.id !== rowId));
+          return;
+        }
+
+        setOrders((prev) => {
+          const exists = prev.some((order) => order.id === normalized.id);
+          if (!exists) return [normalized, ...prev];
+          return prev.map((order) => (order.id === normalized.id ? normalized : order));
+        });
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [normalizeOrders, normalizeVehicles]);
 
   const consolidation = useMemo(() => matchLoads(vehicles, orders), [vehicles, orders]);
 
@@ -266,6 +295,7 @@ export function LoadConsolidationDashboard() {
                   streetViewControl: false,
                   mapTypeControl: false,
                   fullscreenControl: false,
+                  mapId: GOOGLE_MAP_ID || undefined,
                 }}
               >
                 <PolylineF
@@ -273,21 +303,25 @@ export function LoadConsolidationDashboard() {
                   options={{ strokeColor: '#22d3ee', strokeOpacity: 0.9, strokeWeight: 4 }}
                 />
 
-                <MarkerF
+                <AdvancedMarker
                   position={{
                     lat: previewSuggestion.route[0][0],
                     lng: previewSuggestion.route[0][1],
                   }}
-                  label="S"
                   title="Vehicle Start"
+                  label="S"
+                  color="#22d3ee"
+                  enabled={Boolean(GOOGLE_MAP_ID)}
                 />
 
                 {previewSuggestion.route.slice(1).map((point, idx) => (
-                  <MarkerF
+                  <AdvancedMarker
                     key={`stop-${idx}-${point[0]}-${point[1]}`}
                     position={{ lat: point[0], lng: point[1] }}
-                    label={`${idx + 1}`}
                     title={`Stop ${idx + 1}`}
+                    label={`${idx + 1}`}
+                    color="#6366f1"
+                    enabled={Boolean(GOOGLE_MAP_ID)}
                   />
                 ))}
               </GoogleMap>

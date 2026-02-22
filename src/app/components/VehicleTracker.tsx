@@ -1,8 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { supabase } from "../../services/supabaseClient";
-
-const VehicleTracker: React.FC = () => {
+import { useParams } from 'react-router-dom';import { supabase } from '../../services/supabaseClient';const VehicleTracker: React.FC = () => {
   const { vehicleId } = useParams<{ vehicleId: string }>();
   const gpsIntervalRef = useRef<number | null>(null);
   const [status, setStatus] = useState("Waiting for GPS updates...");
@@ -19,28 +16,17 @@ const VehicleTracker: React.FC = () => {
 
           try {
             const { error: updateError } = await supabase
-              .from("vehicles")
-              .update({
-                last_lat: latitude,
-                last_lng: longitude,
-                last_location_updated_at: new Date().toISOString(),
-              })
-              .eq("id", vehicleId);
-
-            if (updateError) {
-              throw new Error(updateError.message);
-            }
-
-            const { error: insertError } = await supabase
-              .from("driver_gps_logs")
-              .insert({
+              .from("vehicle_status")
+              .upsert({
                 vehicle_id: vehicleId,
                 latitude,
                 longitude,
+                status: "active",
+                battery_level: null,
               });
 
-            if (insertError) {
-              throw new Error(insertError.message);
+            if (updateError) {
+              throw new Error(updateError.message);
             }
 
             setStatus(`Last update: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);

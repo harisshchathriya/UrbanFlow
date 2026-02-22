@@ -1,10 +1,4 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { LogOut } from 'lucide-react';
-import { supabase } from '../../services/supabaseClient';
-import { clearVerifiedRole } from '../auth/fallbackAuth';
-
-interface DashboardHeaderProps {
+import { useState } from 'react';import { useNavigate } from 'react-router-dom';import { LogOut } from 'lucide-react';import { supabase } from '../../services/supabaseClient';import { clearVerifiedRole } from '../auth/fallbackAuth';interface DashboardHeaderProps {
   title: string;
   subtitle: string;
 }

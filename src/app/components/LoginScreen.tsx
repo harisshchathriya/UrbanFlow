@@ -1,9 +1,4 @@
-import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { motion } from 'motion/react';
-import { Loader2 } from 'lucide-react';
-
-export function LoginScreen() {
+import { useState } from 'react';import { useNavigate, useParams } from 'react-router-dom';import { motion } from 'motion/react';import { Loader2 } from 'lucide-react';export function LoginScreen() {
   const navigate = useNavigate();
   const { role } = useParams();
   const [formData, setFormData] = useState({

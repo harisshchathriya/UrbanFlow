@@ -1,15 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, Truck, XCircle } from 'lucide-react';
-import { GlassCard } from './GlassCard';
-import {
-  Delivery,
-  DeliveryStatus,
-  getTodaysDeliveries,
-  updateDeliveryStatus,
-} from '../../services/deliveryService';
-import { supabase } from '../../services/supabaseClient';
-
-type WorkflowState =
+import { useCallback, useEffect, useMemo, useState } from 'react';import { CheckCircle2, Truck, XCircle } from 'lucide-react';import { GlassCard } from './GlassCard';import { DeliveryRecord, DeliveryStatus, getTodaysDeliveries, updateDeliveryStatus } from '../../services/deliveryService';import { supabase } from '../../services/supabaseClient';type WorkflowState =
   | 'idle'
   | 'job_assigned'
   | 'accepted'
@@ -18,15 +7,17 @@ type WorkflowState =
 
 interface TodayJobsSectionProps {
   driverId: string;
-  onJobAccepted: (delivery: Delivery) => void;
+  onJobAccepted: (delivery: DeliveryRecord) => void;
   onJobDeclined: (deliveryId: string) => void;
 }
 
 const statusClasses: Record<DeliveryStatus, string> = {
   assigned: 'bg-yellow-500/20 text-yellow-200 border-yellow-300/30',
   accepted: 'bg-cyan-500/20 text-cyan-100 border-cyan-300/30',
-  declined: 'bg-red-500/20 text-red-200 border-red-300/30',
+  in_transit: 'bg-indigo-500/20 text-indigo-200 border-indigo-300/30',
   completed: 'bg-emerald-500/20 text-emerald-100 border-emerald-300/30',
+  rejected: 'bg-red-500/20 text-red-200 border-red-300/30',
+  cancelled: 'bg-gray-500/20 text-gray-200 border-gray-300/30',
 };
 
 export function TodayJobsSection({
@@ -34,7 +25,7 @@ export function TodayJobsSection({
   onJobAccepted,
   onJobDeclined,
 }: TodayJobsSectionProps) {
-  const [jobs, setJobs] = useState<Delivery[]>([]);
+  const [jobs, setJobs] = useState<DeliveryRecord[]>([]);
   const [workflowState, setWorkflowState] = useState<WorkflowState>('idle');
   const [activeDeliveryId, setActiveDeliveryId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -91,19 +82,19 @@ export function TodayJobsSection({
   }, [driverId, loadJobs]);
 
   const visibleJobs = useMemo(
-    () => jobs.filter((job) => job.status !== 'declined'),
+    () => jobs.filter((job) => job.status !== 'rejected'),
     [jobs]
   );
 
   const handleAccept = useCallback(
-    async (delivery: Delivery) => {
+    async (delivery: DeliveryRecord) => {
       try {
-        await updateDeliveryStatus(delivery.delivery_id, 'accepted');
+        await updateDeliveryStatus(delivery.id, 'accepted');
         const nextDelivery = { ...delivery, status: 'accepted' as DeliveryStatus };
         setJobs((prev) =>
-          prev.map((item) => (item.delivery_id === delivery.delivery_id ? nextDelivery : item))
+          prev.map((item) => (item.id === delivery.id ? nextDelivery : item))
         );
-        setActiveDeliveryId(delivery.delivery_id);
+        setActiveDeliveryId(delivery.id);
         setWorkflowState('accepted');
         onJobAccepted(nextDelivery);
       } catch (err) {
@@ -114,12 +105,12 @@ export function TodayJobsSection({
   );
 
   const handleDecline = useCallback(
-    async (delivery: Delivery) => {
+    async (delivery: DeliveryRecord) => {
       const previous = jobs;
-      setJobs((prev) => prev.filter((item) => item.delivery_id !== delivery.delivery_id));
+      setJobs((prev) => prev.filter((item) => item.id !== delivery.id));
       try {
-        await updateDeliveryStatus(delivery.delivery_id, 'declined');
-        onJobDeclined(delivery.delivery_id);
+        await updateDeliveryStatus(delivery.id, 'rejected');
+        onJobDeclined(delivery.id);
       } catch (err) {
         setJobs(previous);
         setError(err instanceof Error ? err.message : 'Failed to decline job.');
@@ -155,10 +146,10 @@ export function TodayJobsSection({
 
       <div className="space-y-3">
         {visibleJobs.map((job) => {
-          const isActive = activeDeliveryId === job.delivery_id || job.status === 'accepted';
+          const isActive = activeDeliveryId === job.id || job.status === 'accepted';
           return (
             <div
-              key={job.delivery_id}
+              key={job.id}
               className={`rounded-xl border p-4 ${
                 isActive
                   ? 'border-cyan-300/40 bg-cyan-500/10'
@@ -166,13 +157,13 @@ export function TodayJobsSection({
               }`}
             >
               <div className="mb-2 flex items-center justify-between">
-                <p className="text-primary-urban">Delivery #{job.delivery_id.slice(0, 8)}</p>
+                <p className="text-primary-urban">Delivery #{job.id.slice(0, 8)}</p>
                 <span className={`rounded-full border px-2 py-1 text-xs ${statusClasses[job.status]}`}>
                   {job.status}
                 </span>
               </div>
-              <p className="text-sm text-secondary-urban mb-1">{job.address}</p>
-              <p className="text-sm text-secondary-urban mb-3">Load: {job.load_details}</p>
+              <p className="text-sm text-secondary-urban mb-1">{job.pickup_location}</p>
+              <p className="text-sm text-secondary-urban mb-3">Dropoff: {job.dropoff_location}</p>
 
               {job.status === 'assigned' && (
                 <div className="flex gap-2">

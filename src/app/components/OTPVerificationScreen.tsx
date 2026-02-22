@@ -1,10 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { motion } from 'motion/react';
-import { Loader2 } from 'lucide-react';
-import { setVerifiedRole } from '../auth/fallbackAuth';
-
-export function OTPVerificationScreen() {
+import { useState, useRef, useEffect } from 'react';import { useNavigate, useParams } from 'react-router-dom';import { motion } from 'motion/react';import { Loader2 } from 'lucide-react';import { setVerifiedRole } from '../auth/fallbackAuth';import { supabase } from '../../services/supabaseClient';export function OTPVerificationScreen() {
   const navigate = useNavigate();
   const { role } = useParams();
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
@@ -56,24 +50,32 @@ export function OTPVerificationScreen() {
     inputRefs.current[nextIndex]?.focus();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const otpValue = otp.join('');
-    
-    // Check if OTP is complete (6 digits)
     if (otpValue.length !== 6) return;
 
     setLoading(true);
 
-    setTimeout(() => {
-      setLoading(false);
-      if (role) {
-        setVerifiedRole(role);
-        navigate(`/dashboard/${role}`);
-      } else {
-        navigate('/role-selection');
+    if (role) {
+      setVerifiedRole(role);
+    }
+
+    if (role === 'vehicle-driver') {
+      const { data, error } = await supabase.from('drivers').select('id').limit(1);
+      if (!error && data && data[0]?.id) {
+        setLoading(false);
+        navigate(`/dashboard/vehicle-driver/${data[0].id}`);
+        return;
       }
-    }, 800);
+    }
+
+    setLoading(false);
+    if (role) {
+      navigate(`/dashboard/${role}`);
+    } else {
+      navigate('/role-selection');
+    }
   };
 
   const handleResendOTP = () => {
@@ -88,8 +90,6 @@ export function OTPVerificationScreen() {
   const handleEditDetails = () => {
     navigate(`/login/${role}`);
   };
-
-  const isOtpComplete = otp.every(digit => digit !== '');
 
   return (
     <div className="min-h-screen urbanflow-gradient flex items-center justify-center p-4">
@@ -127,7 +127,6 @@ export function OTPVerificationScreen() {
     onKeyDown={(e) => handleKeyDown(index, e)}
     onPaste={handlePaste}
     className="glass-input w-14 h-14 text-center text-2xl rounded-xl font-medium"
-    required
   />
 ))}
               </div>
@@ -139,7 +138,7 @@ export function OTPVerificationScreen() {
             {/* Primary CTA */}
             <button
               type="submit"
-              disabled={loading || !isOtpComplete}
+              disabled={loading}
               className="glass-button w-full py-4 rounded-xl text-white text-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
@@ -168,7 +167,7 @@ export function OTPVerificationScreen() {
                 onClick={handleEditDetails}
                 className="text-secondary-urban hover:text-primary-urban transition-colors text-sm"
               >
-                ← Edit Details
+                â Edit Details
               </button>
             </div>
           </div>
