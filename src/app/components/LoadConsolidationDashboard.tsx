@@ -139,7 +139,7 @@ export function LoadConsolidationDashboard() {
           return;
         }
 
-        const normalized = normalizeVehicles([row])[0];
+        const normalized = normalizeVehicles([row], [])[0];
         if (!normalized) return;
         setVehicles((prev) => {
           const exists = prev.some((vehicle) => vehicle.id === normalized.id);

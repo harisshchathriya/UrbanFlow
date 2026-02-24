@@ -6,9 +6,19 @@ import { useEffect } from 'react';import { useGoogleMap } from '@react-google-ma
   size?: number;
   zIndex?: number;
   enabled?: boolean;
+  pulse?: boolean;
+  onClick?: () => void;
 };
 
-const buildContent = (label?: string, color?: string, size?: number) => {
+const injectPulseStyle = () => {
+  if (document.getElementById('urbanflow-pulse-style')) return;
+  const style = document.createElement('style');
+  style.id = 'urbanflow-pulse-style';
+  style.textContent = `@keyframes urbanflow-pulse {0%{transform:scale(1);}50%{transform:scale(1.2);}100%{transform:scale(1);}}`;
+  document.head.appendChild(style);
+};
+
+const buildContent = (label?: string, color?: string, size?: number, pulse?: boolean) => {
   const dotSize = Math.max(10, size ?? 14);
   const el = document.createElement('div');
   el.style.width = `${dotSize}px`;
@@ -26,19 +36,23 @@ const buildContent = (label?: string, color?: string, size?: number) => {
   if (label) {
     el.textContent = label;
   }
+  if (pulse) {
+    el.style.animation = 'urbanflow-pulse 1.2s ease-in-out infinite';
+  }
   return el;
 };
 
-export function AdvancedMarker({ position, title, label, color, size, zIndex, enabled = true }: AdvancedMarkerProps) {
+export function AdvancedMarker({ position, title, label, color, size, zIndex, enabled = true, pulse = false, onClick }: AdvancedMarkerProps) {
   const map = useGoogleMap();
 
   useEffect(() => {
     if (!map || !enabled) return;
+    if (pulse) injectPulseStyle();
     const markerLib = (google.maps as any)?.marker;
     const AdvancedMarkerElement = markerLib?.AdvancedMarkerElement;
     if (!AdvancedMarkerElement) return;
 
-    const content = buildContent(label, color, size);
+    const content = buildContent(label, color, size, pulse);
     const marker = new AdvancedMarkerElement({
       map,
       position,
@@ -47,10 +61,16 @@ export function AdvancedMarker({ position, title, label, color, size, zIndex, en
       zIndex,
     });
 
+    const handleClick = () => {
+      onClick?.();
+    };
+    const listener = marker.addListener('click', handleClick);
+
     return () => {
+      listener?.remove();
       marker.map = null;
     };
-  }, [map, position, title, label, color, size, zIndex, enabled]);
+  }, [map, position, title, label, color, size, zIndex, enabled, pulse, onClick]);
 
   return null;
 }

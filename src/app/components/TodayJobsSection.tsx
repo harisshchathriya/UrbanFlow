@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';import { CheckCircle2, Truck, XCircle } from 'lucide-react';import { GlassCard } from './GlassCard';import { DeliveryRecord, DeliveryStatus, getTodaysDeliveries, updateDeliveryStatus } from '../../services/deliveryService';import { supabase } from '../../services/supabaseClient';type WorkflowState =
+import { useCallback, useEffect, useMemo, useState } from 'react';import { CheckCircle2, Truck, XCircle } from 'lucide-react';import { GlassCard } from './GlassCard';import { DeliveryRecord, DeliveryStatus, getDeliveryById, getTodaysDeliveries, updateDeliveryStatus } from '../../services/deliveryService';import { supabase } from '../../services/supabaseClient';type WorkflowState =
   | 'idle'
   | 'job_assigned'
   | 'accepted'
@@ -89,19 +89,25 @@ export function TodayJobsSection({
   const handleAccept = useCallback(
     async (delivery: DeliveryRecord) => {
       try {
-        await updateDeliveryStatus(delivery.id, 'accepted');
-        const nextDelivery = { ...delivery, status: 'accepted' as DeliveryStatus };
-        setJobs((prev) =>
-          prev.map((item) => (item.id === delivery.id ? nextDelivery : item))
-        );
-        setActiveDeliveryId(delivery.id);
-        setWorkflowState('accepted');
-        onJobAccepted(nextDelivery);
+        const { data, error } = await supabase.rpc('accept_delivery_atomic', {
+          p_delivery_id: delivery.id,
+          p_driver_id: driverId,
+        });
+        if (error || !data) {
+          throw new Error(error?.message || 'Delivery already taken.');
+        }
+        const latest = await getDeliveryById(delivery.id);
+        if (latest) {
+          setActiveDeliveryId(latest.id);
+          setWorkflowState('accepted');
+          onJobAccepted(latest);
+        }
+        await loadJobs();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to accept job.');
       }
     },
-    [onJobAccepted]
+    [driverId, loadJobs, onJobAccepted]
   );
 
   const handleDecline = useCallback(

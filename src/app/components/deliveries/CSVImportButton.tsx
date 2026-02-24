@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { parseFile } from '../../../engine/utils/csvParser';import { DeliveryInsertInput, insertDeliveries } from '../../../services/deliveryService';interface CSVImportButtonProps {
+import { parseFile } from '../../../engine/utils/csvParser';import deliveryService, { DeliveryImportInput } from '../../../services/deliveryService';interface CSVImportButtonProps {
   onSuccess: () => void;
   driverId?: string | null;
   vehicleId?: string | null;
@@ -47,7 +47,7 @@ const CSVImportButton: React.FC<CSVImportButtonProps> = ({ onSuccess, driverId, 
       }
 
       const nowIso = new Date().toISOString();
-      const payloads: DeliveryInsertInput[] = parsedRows.map((row) => {
+      const payloads: DeliveryImportInput[] = parsedRows.map((row) => {
         const resolvedDriverId = row.driver_id || driverId;
         if (!resolvedDriverId) {
           throw new Error("Driver ID is required for every imported row.");
@@ -72,7 +72,7 @@ const CSVImportButton: React.FC<CSVImportButtonProps> = ({ onSuccess, driverId, 
         };
       });
 
-      await insertDeliveries(payloads);
+      await deliveryService.insertDeliveries(payloads);
       setMessage(`Imported ${payloads.length} delivery record(s).`);
 
       onSuccess();

@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';import { useNavigate } from 'react-router-dom';import type { Session } from '@supabase/supabase-js';
-import { GoogleMap, useJsApiLoader } from '@react-google-maps/api';import { DashboardHeader } from './DashboardHeader';import { GlassCard } from './GlassCard';import { KPICard } from './KPICard';import { CO2Dashboard } from './CO2Dashboard';import { LoadConsolidationDashboard } from './LoadConsolidationDashboard';import { supabase } from '../../services/supabaseClient';import { hasVerifiedRole } from '../auth/fallbackAuth';import { AdvancedMarker } from './maps/AdvancedMarker';import { GOOGLE_MAP_ID, GOOGLE_MAPS_API_KEY, MAP_LIBRARIES } from './maps/googleMapsConfig';import { AlertTriangle, ArrowRight, Clock, Package, Route, Truck, Users } from 'lucide-react';type DriverLive = {
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';import { useNavigate } from 'react-router-dom';import type { Session } from '@supabase/supabase-js';
+import { GoogleMap, Marker, Polyline, useJsApiLoader } from '@react-google-maps/api';import { DashboardHeader } from './DashboardHeader';import { GlassCard } from './GlassCard';import { KPICard } from './KPICard';import { CO2Dashboard } from './CO2Dashboard';import { LoadConsolidationDashboard } from './LoadConsolidationDashboard';import { supabase } from '../../services/supabaseClient';import { hasVerifiedRole } from '../auth/fallbackAuth';import { AdvancedMarker } from './maps/AdvancedMarker';import { GOOGLE_MAP_ID, GOOGLE_MAPS_API_KEY, MAP_LIBRARIES } from './maps/googleMapsConfig';import { AlertTriangle, ArrowRight, Clock, Package, Route, Truck, Users } from 'lucide-react';type DriverLive = {
   id: string;
   name: string;
   status: string;
   lat: number;
   lng: number;
+  lastLat: number | null;
+  lastLng: number | null;
+  currentDeliveryId: string | null;
   updatedAt: string | null;
   vehicleId: string | null;
   battery: number | null;
@@ -54,8 +57,13 @@ type DriverRow = {
   id: string;
   name: string | null;
   status: string | null;
+  current_latitude?: number | null;
+  current_longitude?: number | null;
   last_lat: number | null;
   last_lng: number | null;
+  current_delivery_id?: string | null;
+  last_location_updated_at?: string | null;
+  updated_at?: string | null;
 };
 
 type VehicleRow = {
@@ -71,6 +79,7 @@ type VehicleStatusRow = {
   longitude: number | null;
   status: string | null;
   battery_level: number | null;
+  updated_at?: string | null;
 };
 
 type DeliveryRow = {
@@ -84,7 +93,10 @@ type DeliveryRow = {
   to_lat: number | null;
   to_lng: number | null;
   created_at?: string | null;
+  drop_lat?: number | null;
+  drop_lng?: number | null;
 };
+
 
 const toNumber = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -115,8 +127,13 @@ const mapDriverLive = (
   vehicleByDriverName: Map<string, VehicleRow>,
   statusByVehicleId: Map<string, VehicleStatusRow>
 ): DriverLive | null => {
-  const lat = toNumber(row.last_lat);
-  const lng = toNumber(row.last_lng);
+  const normalizedStatus = (row.status || '').toLowerCase().replace('-', '_');
+  const liveLat = toNumber(row.current_latitude);
+  const liveLng = toNumber(row.current_longitude);
+  const lastLat = toNumber(row.last_lat);
+  const lastLng = toNumber(row.last_lng);
+  const lat = normalizedStatus === 'at_hub' ? lastLat ?? liveLat : liveLat ?? lastLat;
+  const lng = normalizedStatus === 'at_hub' ? lastLng ?? liveLng : liveLng ?? lastLng;
   if (lat === null || lng === null) return null;
   const driverName = row.name || 'Unknown Driver';
   const vehicle = vehicleByDriverName.get(driverName) || null;
@@ -124,10 +141,13 @@ const mapDriverLive = (
   return {
     id: row.id,
     name: driverName,
-    status: (row.status || vehicleStatus?.status || 'unknown').toLowerCase(),
+    status: normalizedStatus || (vehicleStatus?.status || 'unknown').toLowerCase().replace('-', '_'),
     lat,
     lng,
-    updatedAt: null,
+    lastLat,
+    lastLng,
+    currentDeliveryId: row.current_delivery_id ?? null,
+    updatedAt: row.last_location_updated_at ?? row.updated_at ?? null,
     vehicleId: vehicle?.id || null,
     battery: vehicleStatus?.battery_level ?? null,
     capacity: vehicle?.capacity ?? null,
@@ -172,6 +192,15 @@ export function LogisticsOperatorDashboard() {
   const [deliveries, setDeliveries] = useState<DeliveryLive[]>([]);
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [selectedDriver, setSelectedDriver] = useState<DriverLive | null>(null);
+  const [selectedDestination, setSelectedDestination] = useState<{ lat: number; lng: number } | null>(null);
+  const [routeInfo, setRouteInfo] = useState<{
+    coordinates: [number, number][];
+    distance: number;
+    duration: number;
+    source: 'road' | 'fallback';
+  } | null>(null);
+  const [routeWarning, setRouteWarning] = useState<string | null>(null);
   const [kpiUpdatedAt, setKpiUpdatedAt] = useState<{ deliveries?: string; drivers?: string; alerts?: string }>({});
   const [realtimeStatus, setRealtimeStatus] = useState<{ drivers: string; vehicle: string; deliveries: string }>({
     drivers: 'INIT',
@@ -180,7 +209,10 @@ export function LogisticsOperatorDashboard() {
   });
   const [flashDeliveries, setFlashDeliveries] = useState(false);
   const [flashDrivers, setFlashDrivers] = useState(false);
+  const [animatedPositions, setAnimatedPositions] = useState<Record<string, { lat: number; lng: number }>>({});
   const prevCountsRef = useRef<{ deliveries: number; activeDrivers: number }>({ deliveries: 0, activeDrivers: 0 });
+  const animatedPositionsRef = useRef<Record<string, { lat: number; lng: number }>>({});
+  const animationRef = useRef<number | null>(null);
   const vehicleByDriverNameRef = useRef<Map<string, VehicleRow>>(new Map());
   const statusByVehicleIdRef = useRef<Map<string, VehicleStatusRow>>(new Map());
   const isMounted = useRef(true);
@@ -340,24 +372,24 @@ export function LogisticsOperatorDashboard() {
         const lat = toNumber(nextRow.latitude);
         const lng = toNumber(nextRow.longitude);
         const battery = toNumber(nextRow.battery_level);
-        const status = (nextRow.status || 'unknown').toLowerCase();
-        const updatedAt = null;
+        const status = (nextRow.status || 'unknown').toLowerCase().replace('-', '_');
+        const updatedAt = nextRow.updated_at ?? null;
 
         statusByVehicleIdRef.current.set(vehicleId, nextRow);
 
         setDrivers((prev) =>
-          prev.map((driver) =>
-            driver.vehicleId === vehicleId
-              ? {
-                  ...driver,
-                  lat: lat ?? driver.lat,
-                  lng: lng ?? driver.lng,
-                  battery: battery ?? driver.battery,
-                  status: status || driver.status,
-                  updatedAt: updatedAt ?? driver.updatedAt,
-                }
-              : driver
-          )
+          prev.map((driver) => {
+            if (driver.vehicleId !== vehicleId) return driver;
+            const shouldOverrideLocation = driver.status !== 'in_transit' && driver.status !== 'at_hub';
+            return {
+              ...driver,
+              lat: shouldOverrideLocation ? lat ?? driver.lat : driver.lat,
+              lng: shouldOverrideLocation ? lng ?? driver.lng : driver.lng,
+              battery: battery ?? driver.battery,
+              status: status || driver.status,
+              updatedAt: updatedAt ?? driver.updatedAt,
+            };
+          })
         );
         setKpiUpdatedAt((prev) => ({ ...prev, drivers: new Date().toISOString() }));
       })
@@ -398,6 +430,47 @@ export function LogisticsOperatorDashboard() {
     };
   }, [session, fallbackAuthorized, hydrateDashboard]);
 
+  useEffect(() => {
+    if (drivers.length === 0) return;
+    const targets = drivers.reduce((acc, driver) => {
+      acc[driver.id] = { lat: driver.lat, lng: driver.lng };
+      return acc;
+    }, {} as Record<string, { lat: number; lng: number }>);
+    const starts = { ...animatedPositionsRef.current };
+    drivers.forEach((driver) => {
+      if (!starts[driver.id]) {
+        starts[driver.id] = { lat: driver.lat, lng: driver.lng };
+      }
+    });
+    const startTime = performance.now();
+    const duration = 600;
+
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - startTime) / duration);
+      const nextPositions: Record<string, { lat: number; lng: number }> = {};
+      Object.keys(targets).forEach((id) => {
+        const start = starts[id];
+        const end = targets[id];
+        nextPositions[id] = {
+          lat: start.lat + (end.lat - start.lat) * progress,
+          lng: start.lng + (end.lng - start.lng) * progress,
+        };
+      });
+      animatedPositionsRef.current = nextPositions;
+      setAnimatedPositions(nextPositions);
+      if (progress < 1) {
+        animationRef.current = requestAnimationFrame(step);
+      }
+    };
+
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    animationRef.current = requestAnimationFrame(step);
+
+    return () => {
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    };
+  }, [drivers]);
+
   const kpi = useMemo<KPIState>(() => {
     const now = Date.now();
     const delivered = deliveries.filter((d) => d.status === 'completed');
@@ -437,6 +510,70 @@ export function LogisticsOperatorDashboard() {
     };
   }, [deliveries, drivers, alerts.length]);
 
+  const delayedIds = useMemo(() => {
+    const now = Date.now();
+    return new Set(
+      deliveries
+        .filter((d) => {
+          if (!d.eta) return false;
+          if (d.status === 'completed') return false;
+          const etaMs = new Date(d.eta).getTime();
+          return Number.isFinite(etaMs) && etaMs < now;
+        })
+        .map((d) => d.id)
+    );
+  }, [deliveries]);
+
+  const handleDriverSelect = useCallback(
+    async (driver: DriverLive) => {
+      setSelectedDriver(driver);
+      setSelectedDestination(null);
+      setRouteWarning(null);
+      setRouteInfo(null);
+
+      if (driver.status !== 'in_transit') {
+        setRouteWarning('Driver is not in transit.');
+        return;
+      }
+
+      if (!driver.currentDeliveryId) {
+        setRouteWarning('No active delivery linked to this driver.');
+        return;
+      }
+
+      const { data, error: deliveryError } = await supabase
+        .from('deliveries')
+        .select('id,to_lat,to_lng,drop_lat,drop_lng,status')
+        .eq('id', driver.currentDeliveryId)
+        .maybeSingle();
+
+      if (deliveryError || !data) {
+        setRouteWarning('Unable to load delivery details.');
+        return;
+      }
+
+      const destLat = toNumber(data.to_lat ?? data.drop_lat);
+      const destLng = toNumber(data.to_lng ?? data.drop_lng);
+      if (destLat === null || destLng === null) {
+        setRouteWarning('Delivery destination missing coordinates.');
+        return;
+      }
+
+      const start: [number, number] = [driver.lat, driver.lng];
+      const end: [number, number] = [destLat, destLng];
+      setSelectedDestination({ lat: destLat, lng: destLng });
+      const roadRoute = await fetchRoadRoute(start, end);
+      if (roadRoute) {
+        setRouteInfo(roadRoute);
+        return;
+      }
+
+      setRouteWarning('Using fallback straight-line route (ORS unavailable).');
+      setRouteInfo(buildFallbackRoute(start, end));
+    },
+    []
+  );
+
   useEffect(() => {
     const prev = prevCountsRef.current;
     if (kpi.totalDeliveries > prev.deliveries) {
@@ -450,13 +587,19 @@ export function LogisticsOperatorDashboard() {
     prevCountsRef.current = { deliveries: kpi.totalDeliveries, activeDrivers: kpi.activeDrivers };
   }, [kpi.totalDeliveries, kpi.activeDrivers]);
 
-  const mapCenter = useMemo(() => {
-    const active = drivers.filter((d) => realtimeStatuses.has(d.status));
-    if (active.length === 0) return { lat: 12.9716, lng: 77.5946 };
-    const avgLat = active.reduce((sum, d) => sum + d.lat, 0) / active.length;
-    const avgLng = active.reduce((sum, d) => sum + d.lng, 0) / active.length;
-    return { lat: avgLat, lng: avgLng };
+  const activeDriverPins = useMemo(() => {
+    return drivers.filter((d) => d.status === 'in_transit');
   }, [drivers]);
+
+  const atHubDriverPins = useMemo(() => {
+    return drivers.filter((d) => d.status === 'at_hub' && d.lastLat !== null && d.lastLng !== null);
+  }, [drivers]);
+
+  const lastLocationPins = useMemo(() => {
+    return drivers.filter((d) => d.lastLat !== null && d.lastLng !== null && d.status !== 'at_hub');
+  }, [drivers]);
+
+  const mapCenter = { lat: 13.174391, lng: 80.09761 };
 
   const realtimeConnected = useMemo(() => {
     return [realtimeStatus.drivers, realtimeStatus.vehicle, realtimeStatus.deliveries].every(
@@ -649,12 +792,12 @@ export function LogisticsOperatorDashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
           <GlassCard className="lg:col-span-2">
             <h2 className="text-lg text-primary-urban mb-3">Live Driver Map</h2>
-            <div className="h-96 rounded-xl overflow-hidden">
+            <div className="h-[500px] w-full rounded-xl overflow-hidden">
               {isGoogleLoaded ? (
                 <GoogleMap
                   mapContainerClassName="h-full w-full"
                   center={mapCenter}
-                  zoom={12}
+                  zoom={15}
                   options={{
                     streetViewControl: false,
                     mapTypeControl: false,
@@ -662,20 +805,72 @@ export function LogisticsOperatorDashboard() {
                     mapId: GOOGLE_MAP_ID || undefined,
                   }}
                 >
-                  {drivers.map((driver) => (
+                  {routeInfo && (
+                    <Polyline
+                      path={routeInfo.coordinates.map(([lat, lng]) => ({ lat, lng }))}
+                      options={{
+                        strokeColor: routeInfo.source === 'road' ? '#22d3ee' : '#f97316',
+                        strokeOpacity: 0.85,
+                        strokeWeight: 4,
+                      }}
+                    />
+                  )}
+                  {selectedDestination && (
                     <AdvancedMarker
-                      key={driver.id}
-                      position={{ lat: driver.lat, lng: driver.lng }}
-                      title={`${driver.name} | ${driver.status} | Battery: ${driver.battery ?? 'N/A'}%`}
-                      color={
-                        driver.battery !== null && driver.battery < 10
-                          ? '#ef4444'
-                          : driver.battery !== null && driver.battery < 20
-                          ? '#f97316'
-                          : '#22d3ee'
-                      }
-                      size={driver.battery !== null && driver.battery < 10 ? 16 : 14}
+                      key="selected-destination"
+                      position={selectedDestination}
+                      title="Delivery destination"
+                      color="#f97316"
+                      size={12}
                       enabled={Boolean(GOOGLE_MAP_ID)}
+                    />
+                  )}
+                  <Marker
+                    key="force-visible-pin"
+                    position={{ lat: 13.174391, lng: 80.09761 }}
+                    title="FORCED PIN"
+                  />
+                  {activeDriverPins.map((driver) => {
+                    const markerPos = animatedPositions[driver.id] ?? { lat: driver.lat, lng: driver.lng };
+                    return (
+                      <AdvancedMarker
+                        key={driver.id}
+                        position={markerPos}
+                        title={`${driver.name} | ${driver.status} | Battery: ${driver.battery ?? 'N/A'}%`}
+                        color={
+                          driver.battery !== null && driver.battery < 10
+                            ? '#ef4444'
+                            : driver.battery !== null && driver.battery < 20
+                            ? '#f97316'
+                            : '#22d3ee'
+                        }
+                        size={driver.battery !== null && driver.battery < 10 ? 16 : 14}
+                        pulse={driver.battery !== null && driver.battery < 10}
+                        enabled={Boolean(GOOGLE_MAP_ID)}
+                        onClick={() => handleDriverSelect(driver)}
+                      />
+                    );
+                  })}
+                  {atHubDriverPins.map((driver) => (
+                    <AdvancedMarker
+                      key={`hub-${driver.id}`}
+                      position={{ lat: driver.lastLat ?? driver.lat, lng: driver.lastLng ?? driver.lng }}
+                      title={`${driver.name} | at-hub`}
+                      color="#a855f7"
+                      size={13}
+                      enabled={Boolean(GOOGLE_MAP_ID)}
+                      onClick={() => handleDriverSelect(driver)}
+                    />
+                  ))}
+                  {lastLocationPins.map((driver) => (
+                    <AdvancedMarker
+                      key={`last-${driver.id}`}
+                      position={{ lat: driver.lastLat ?? driver.lat, lng: driver.lastLng ?? driver.lng }}
+                      title={`${driver.name} | last known location`}
+                      color="#94a3b8"
+                      size={10}
+                      enabled={Boolean(GOOGLE_MAP_ID)}
+                      onClick={() => handleDriverSelect(driver)}
                     />
                   ))}
                 </GoogleMap>
@@ -685,6 +880,25 @@ export function LogisticsOperatorDashboard() {
                 </div>
               )}
             </div>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-muted-urban">
+              {activeDriverPins.slice(0, 4).map((driver) => (
+                <div key={driver.id} className="flex items-center justify-between">
+                  <span className="text-secondary-urban">{driver.name}</span>
+                  <span>{driver.updatedAt ? new Date(driver.updatedAt).toLocaleTimeString() : 'Last update: N/A'}</span>
+                </div>
+              ))}
+            </div>
+            {selectedDriver && (
+              <div className="mt-3 rounded-xl bg-white/5 p-3 text-sm text-secondary-urban">
+                <p className="text-primary-urban">{selectedDriver.name} route preview</p>
+                {routeInfo && (
+                  <p className="mt-1">
+                    Distance: {routeInfo.distance} km · ETA: {routeInfo.duration} min
+                  </p>
+                )}
+                {routeWarning && <p className="mt-1 text-yellow-300">{routeWarning}</p>}
+              </div>
+            )}
           </GlassCard>
 
           <GlassCard>
@@ -728,7 +942,10 @@ export function LogisticsOperatorDashboard() {
                 </thead>
                 <tbody>
                   {deliveries.slice(0, 8).map((delivery) => (
-                    <tr key={delivery.id} className="border-b border-white/5">
+                    <tr
+                      key={delivery.id}
+                      className={`border-b border-white/5 ${delayedIds.has(delivery.id) ? 'animate-pulse bg-red-500/10' : ''}`}
+                    >
                       <td className="py-2 text-primary-urban">{delivery.id}</td>
                       <td className="py-2">{delivery.commodityName}</td>
                       <td className="py-2">{delivery.quantity}</td>

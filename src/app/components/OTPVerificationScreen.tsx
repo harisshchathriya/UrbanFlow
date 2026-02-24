@@ -1,4 +1,37 @@
-import { useState, useRef, useEffect } from 'react';import { useNavigate, useParams } from 'react-router-dom';import { motion } from 'motion/react';import { Loader2 } from 'lucide-react';import { setVerifiedRole } from '../auth/fallbackAuth';import { supabase } from '../../services/supabaseClient';export function OTPVerificationScreen() {
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { motion } from 'motion/react';
+import { Loader2 } from 'lucide-react';
+import { setVerifiedRole } from '../auth/fallbackAuth';
+import { supabase } from '../../services/supabaseClient';
+
+const getPostOtpRoute = async (role: string | undefined): Promise<string> => {
+  switch (role) {
+    case 'logistics-operator':
+      return '/dashboard/logistics-operator';
+    case 'city-planner':
+      return '/dashboard/city-planner';
+    case 'vehicle-driver': {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const sessionUserId = sessionData.session?.user?.id ?? null;
+      if (sessionUserId) return `/dashboard/vehicle-driver/${sessionUserId}`;
+
+      const { data: driverRows } = await supabase
+        .from('drivers')
+        .select('id')
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      const fallbackDriverId = driverRows?.[0]?.id ? String(driverRows[0].id) : null;
+      if (fallbackDriverId) return `/dashboard/vehicle-driver/${fallbackDriverId}`;
+      return '/dashboard/vehicle-driver';
+    }
+    default:
+      return '/role-selection';
+  }
+};
+
+export function OTPVerificationScreen() {
   const navigate = useNavigate();
   const { role } = useParams();
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
@@ -57,25 +90,11 @@ import { useState, useRef, useEffect } from 'react';import { useNavigate, usePar
 
     setLoading(true);
 
-    if (role) {
-      setVerifiedRole(role);
-    }
+    if (role) setVerifiedRole(role);
 
-    if (role === 'vehicle-driver') {
-      const { data, error } = await supabase.from('drivers').select('id').limit(1);
-      if (!error && data && data[0]?.id) {
-        setLoading(false);
-        navigate(`/dashboard/vehicle-driver/${data[0].id}`);
-        return;
-      }
-    }
-
+    const destination = await getPostOtpRoute(role);
     setLoading(false);
-    if (role) {
-      navigate(`/dashboard/${role}`);
-    } else {
-      navigate('/role-selection');
-    }
+    navigate(destination, { replace: true });
   };
 
   const handleResendOTP = () => {

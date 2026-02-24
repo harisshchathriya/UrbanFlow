@@ -1,4 +1,9 @@
-import { useEffect, useState } from 'react';import { Navigate, useLocation, useParams } from 'react-router-dom';import { supabase } from '../../services/supabaseClient';import { hasVerifiedRole } from '../auth/fallbackAuth';export function DashboardRouter() {
+import { useEffect, useState } from 'react';
+import { Navigate, useLocation, useParams } from 'react-router-dom';
+import { supabase } from '../../services/supabaseClient';
+import { hasVerifiedRole } from '../auth/fallbackAuth';
+
+export function DashboardRouter() {
   const { role } = useParams();
   const location = useLocation();
   const effectiveRole =
@@ -19,9 +24,9 @@ import { useEffect, useState } from 'react';import { Navigate, useLocation, useP
             const { data: driverData } = await supabase
               .from('drivers')
               .select('id')
-              .limit(1)
-              .maybeSingle();
-            setVehicleId(driverData?.id ? String(driverData.id) : null);
+              .order('created_at', { ascending: false })
+              .limit(1);
+            setVehicleId(driverData?.[0]?.id ? String(driverData[0].id) : 'guest-driver');
             return;
           }
           setVehicleId(null);
@@ -35,14 +40,19 @@ import { useEffect, useState } from 'react';import { Navigate, useLocation, useP
     };
 
     void resolveVehicleId();
-  }, [effectiveRole, allowGuest, hasVerifiedRole]);
+  }, [effectiveRole, allowGuest]);
 
   switch (effectiveRole) {
     case 'logistics-operator':
       return <Navigate to="/dashboard/logistics-operator" replace />;
     case 'vehicle-driver':
       if (loadingVehicle) return null;
-      if (!vehicleId) return <Navigate to="/login/vehicle-driver" replace />;
+      if (!vehicleId) {
+        if (hasVerifiedRole('vehicle-driver') || allowGuest) {
+          return <Navigate to="/dashboard/vehicle-driver/guest-driver" replace />;
+        }
+        return <Navigate to="/login/vehicle-driver" replace />;
+      }
       return <Navigate to={`/dashboard/vehicle-driver/${vehicleId}`} replace />;
     case 'city-planner':
       return <Navigate to="/dashboard/city-planner" replace />;

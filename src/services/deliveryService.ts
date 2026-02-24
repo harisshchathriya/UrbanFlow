@@ -43,6 +43,17 @@ export type DeliveryInsertInput = Omit<DeliveryRecord, 'id' | 'created_at'> & {
   created_at?: string;
 };
 
+// Backward-compatible alias for UI imports
+// Flexible import shape for CSV/parser variants
+export type DeliveryImportInput = DeliveryInsertInput & {
+  commodity_name?: string;
+  quantity?: number;
+  pickup_lat?: number;
+  pickup_lng?: number;
+  drop_lat?: number;
+  drop_lng?: number;
+};
+
 export const fetchDeliveries = async (): Promise<DeliveryRecord[]> => {
   const { data, error } = await supabase
     .from('deliveries')
@@ -60,6 +71,12 @@ export const insertDeliveries = async (rows: DeliveryInsertInput[]): Promise<voi
 
   if (error) throw new Error(error.message);
 };
+
+export const deliveryService = {
+  insertDeliveries,
+};
+
+export default deliveryService;
 
 type DeliveryRow = Record<string, unknown>;
 
